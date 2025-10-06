@@ -8,6 +8,7 @@ use eframe::egui;
 use poll_promise::Promise;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::cell::Cell;
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
@@ -36,6 +37,8 @@ struct Tab {
     title: String,
     data: Option<TableData>,
     is_loading: bool,
+    sort_column: Option<usize>,
+    sort_ascending: bool,
 }
 
 enum AsyncOperation {
@@ -215,10 +218,41 @@ impl DbClientApp {
             title,
             data,
             is_loading: false,
+            sort_column: None,
+            sort_ascending: true,
         };
         self.next_tab_id += 1;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
+    }
+
+    fn sort_tab_data(&mut self, tab_index: usize, column_index: usize) {
+        if let Some(tab) = self.tabs.get_mut(tab_index) {
+            // Toggle sort direction if clicking same column
+            if tab.sort_column == Some(column_index) {
+                tab.sort_ascending = !tab.sort_ascending;
+            } else {
+                tab.sort_column = Some(column_index);
+                tab.sort_ascending = true;
+            }
+
+            // Sort the data
+            if let Some(data) = &mut tab.data {
+                let ascending = tab.sort_ascending;
+                data.rows.sort_by(|a, b| {
+                    let a_val = a.get(column_index).map(|s| s.as_str()).unwrap_or("");
+                    let b_val = b.get(column_index).map(|s| s.as_str()).unwrap_or("");
+
+                    // Try to parse as numbers for numeric sorting
+                    let cmp = match (a_val.parse::<f64>(), b_val.parse::<f64>()) {
+                        (Ok(a_num), Ok(b_num)) => a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal),
+                        _ => a_val.cmp(b_val),
+                    };
+
+                    if ascending { cmp } else { cmp.reverse() }
+                });
+            }
+        }
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -655,8 +689,13 @@ impl eframe::App for DbClientApp {
                     }
 
                     // Data grid
+                    let column_to_sort = Cell::new(None);
+
                     if let Some(tab) = self.tabs.get(self.active_tab) {
                         if let Some(data) = &tab.data {
+                            let sort_column = tab.sort_column;
+                            let sort_ascending = tab.sort_ascending;
+
                             egui::ScrollArea::both()
                                 .id_source("data_grid")
                                 .show(ui, |ui| {
@@ -671,10 +710,21 @@ impl eframe::App for DbClientApp {
 
                                     table
                                         .header(22.0, |mut header| {
-                                            for column in &data.columns {
+                                            for (col_index, column) in data.columns.iter().enumerate() {
                                                 header.col(|ui| {
                                                     ui.vertical(|ui| {
-                                                        ui.strong(column);
+                                                        // Create clickable header with sort indicator
+                                                        let sort_indicator = if sort_column == Some(col_index) {
+                                                            if sort_ascending { " ▲" } else { " ▼" }
+                                                        } else {
+                                                            ""
+                                                        };
+
+                                                        let header_text = format!("{}{}", column, sort_indicator);
+                                                        if ui.button(egui::RichText::new(header_text).strong()).clicked() {
+                                                            column_to_sort.set(Some(col_index));
+                                                        }
+
                                                         ui.add_space(2.0);
                                                         ui.separator();
                                                     });
@@ -743,6 +793,11 @@ impl eframe::App for DbClientApp {
                         ui.centered_and_justified(|ui| {
                             ui.label("Select a table to view data");
                         });
+                    }
+
+                    // Handle column sort after the immutable borrow is released
+                    if let Some(col_index) = column_to_sort.get() {
+                        self.sort_tab_data(self.active_tab, col_index);
                     }
         });
 
