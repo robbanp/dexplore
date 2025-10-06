@@ -39,6 +39,8 @@ struct Tab {
     is_loading: bool,
     sort_column: Option<usize>,
     sort_ascending: bool,
+    current_page: usize,
+    page_size: usize,
 }
 
 enum AsyncOperation {
@@ -182,7 +184,7 @@ impl DbClientApp {
 
             let promise = Promise::spawn_thread("query_table", move || {
                 runtime.block_on(async move {
-                    db_clone.query_table(&full_table_name, 1000).await
+                    db_clone.query_table(&full_table_name, 100000).await
                 })
             });
 
@@ -220,6 +222,8 @@ impl DbClientApp {
             is_loading: false,
             sort_column: None,
             sort_ascending: true,
+            current_page: 0,
+            page_size: 100, // Default to 100 rows per page
         };
         self.next_tab_id += 1;
         self.tabs.push(tab);
@@ -690,26 +694,83 @@ impl eframe::App for DbClientApp {
 
                     // Data grid
                     let column_to_sort = Cell::new(None);
+                    let mut page_size_changed = None;
+                    let mut page_changed = None;
 
                     if let Some(tab) = self.tabs.get(self.active_tab) {
                         if let Some(data) = &tab.data {
                             let sort_column = tab.sort_column;
                             let sort_ascending = tab.sort_ascending;
+                            let current_page = tab.current_page;
+                            let page_size = tab.page_size;
 
+                            // Calculate pagination
+                            let total_rows = data.rows.len();
+                            let total_pages = (total_rows + page_size - 1) / page_size;
+                            let start_row = current_page * page_size;
+                            let end_row = (start_row + page_size).min(total_rows);
+
+                            // Pagination controls
+                            ui.horizontal(|ui| {
+                                ui.label("Rows per page:");
+
+                                for size in [50, 100, 500, 1000, 5000] {
+                                    let is_selected = page_size == size;
+                                    if ui.selectable_label(is_selected, format!("{}", size)).clicked() {
+                                        page_size_changed = Some(size);
+                                    }
+                                }
+
+                                ui.separator();
+
+                                if ui.button("◀ Previous").clicked() && current_page > 0 {
+                                    page_changed = Some(current_page - 1);
+                                }
+
+                                ui.label(format!("Page {} of {} ({}-{} of {} rows)",
+                                    current_page + 1,
+                                    total_pages.max(1),
+                                    start_row + 1,
+                                    end_row,
+                                    total_rows
+                                ));
+
+                                if ui.button("Next ▶").clicked() && current_page + 1 < total_pages {
+                                    page_changed = Some(current_page + 1);
+                                }
+                            });
+
+                            ui.separator();
+
+                            let available_height = ui.available_height();
                             egui::ScrollArea::both()
                                 .id_source("data_grid")
+                                .max_height(available_height)
+                                .auto_shrink([false; 2])
                                 .show(ui, |ui| {
                                     use egui_extras::{Column, TableBuilder};
 
                                     let table = TableBuilder::new(ui)
                                         .striped(true)
                                         .resizable(true)
+                                        .vscroll(true)
                                         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                        .column(Column::initial(50.0).at_least(40.0).resizable(false)) // Line number column
                                         .columns(Column::initial(120.0).at_least(80.0).resizable(true).clip(true), data.columns.len())
-                                        .min_scrolled_height(0.0);
+                                        .min_scrolled_height(available_height);
 
                                     table
                                         .header(22.0, |mut header| {
+                                            // Line number header
+                                            header.col(|ui| {
+                                                ui.vertical(|ui| {
+                                                    ui.strong("#");
+                                                    ui.add_space(2.0);
+                                                    ui.separator();
+                                                });
+                                            });
+
+                                            // Data column headers
                                             for (col_index, column) in data.columns.iter().enumerate() {
                                                 header.col(|ui| {
                                                     ui.vertical(|ui| {
@@ -732,10 +793,44 @@ impl eframe::App for DbClientApp {
                                             }
                                         })
                                         .body(|mut body| {
-                                            for (row_index, row) in data.rows.iter().enumerate() {
-                                                let is_selected = self.selected_row == Some(row_index);
+                                            // Only show rows for current page
+                                            let page_rows = &data.rows[start_row..end_row];
+                                            for (page_row_index, row) in page_rows.iter().enumerate() {
+                                                let actual_row_index = start_row + page_row_index;
+                                                let is_selected = self.selected_row == Some(actual_row_index);
 
                                                 body.row(18.0, |mut row_ui| {
+                                                    // Line number cell
+                                                    row_ui.col(|ui| {
+                                                        let rect = ui.available_rect_before_wrap();
+
+                                                        // Add background color for selected row
+                                                        if is_selected {
+                                                            ui.painter().rect_filled(
+                                                                rect,
+                                                                0.0,
+                                                                egui::Color32::from_rgb(200, 200, 200)
+                                                            );
+                                                        }
+
+                                                        // Interact with entire cell area for row selection
+                                                        let cell_response = ui.interact(rect, ui.id().with(actual_row_index), egui::Sense::click());
+
+                                                        // Left click anywhere in cell to select row
+                                                        if cell_response.clicked() {
+                                                            if is_selected {
+                                                                self.selected_row = None;
+                                                            } else {
+                                                                self.selected_row = Some(actual_row_index);
+                                                            }
+                                                        }
+
+                                                        // Display line number (1-indexed)
+                                                        ui.label(egui::RichText::new(format!("{}", actual_row_index + 1))
+                                                            .color(egui::Color32::from_rgb(150, 150, 150)));
+                                                    });
+
+                                                    // Data cells
                                                     for cell in row {
                                                         row_ui.col(|ui| {
                                                             // Get the full cell rect
@@ -751,14 +846,14 @@ impl eframe::App for DbClientApp {
                                                             }
 
                                                             // Interact with entire cell area for row selection
-                                                            let cell_response = ui.interact(rect, ui.id().with(row_index), egui::Sense::click());
+                                                            let cell_response = ui.interact(rect, ui.id().with(actual_row_index), egui::Sense::click());
 
                                                             // Left click anywhere in cell to select row
                                                             if cell_response.clicked() {
                                                                 if is_selected {
                                                                     self.selected_row = None;
                                                                 } else {
-                                                                    self.selected_row = Some(row_index);
+                                                                    self.selected_row = Some(actual_row_index);
                                                                 }
                                                             }
 
@@ -798,6 +893,21 @@ impl eframe::App for DbClientApp {
                     // Handle column sort after the immutable borrow is released
                     if let Some(col_index) = column_to_sort.get() {
                         self.sort_tab_data(self.active_tab, col_index);
+                    }
+
+                    // Handle page size changes
+                    if let Some(new_size) = page_size_changed {
+                        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                            tab.page_size = new_size;
+                            tab.current_page = 0; // Reset to first page when changing page size
+                        }
+                    }
+
+                    // Handle page navigation
+                    if let Some(new_page) = page_changed {
+                        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                            tab.current_page = new_page;
+                        }
                     }
         });
 
