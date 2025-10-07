@@ -4,7 +4,7 @@ mod models;
 
 use anyhow::Result;
 use config::{Config, DatabaseConnection};
-use db::{AsyncOperation, ColumnInfo, Database, SchemaInfo};
+use db::{AsyncOperation, Database, SchemaInfo};
 use models::{AppState, Tab, TabSource, TableData};
 use eframe::egui;
 use poll_promise::Promise;
