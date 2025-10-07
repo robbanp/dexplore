@@ -32,15 +32,15 @@ impl DatabaseTree {
             ui.label("🔍");
             let response = ui.add(
                 egui::TextEdit::singleline(search_query)
-                    .hint_text("Search tables...")
-                    .desired_width(f32::INFINITY)
+                    .hint_text("Search...")
+                    .desired_width(180.0)
             );
 
             if response.changed() {
                 event = Some(DatabaseTreeEvent::SearchChanged(search_query.clone()));
             }
 
-            if !search_query.is_empty() && ui.button("✖").clicked() {
+            if !search_query.is_empty() && ui.small_button("✖").clicked() {
                 search_query.clear();
                 event = Some(DatabaseTreeEvent::SearchChanged(String::new()));
             }
