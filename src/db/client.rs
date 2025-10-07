@@ -100,7 +100,7 @@ impl Database {
         for row in rows {
             let schema: String = row.get(0);
             let table: String = row.get(1);
-            schemas_map.entry(schema).or_insert_with(Vec::new).push(table);
+            schemas_map.entry(schema).or_default().push(table);
         }
 
         let mut result: Vec<SchemaInfo> = schemas_map
