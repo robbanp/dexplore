@@ -5,52 +5,12 @@ mod models;
 use anyhow::Result;
 use config::{Config, DatabaseConnection};
 use db::{ColumnInfo, Database, SchemaInfo};
-use models::{Tab, TabSource, TableData};
+use models::{AppState, Tab, TabSource, TableData};
 use eframe::egui;
 use poll_promise::Promise;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::cell::Cell;
-
-#[derive(Serialize, Deserialize)]
-struct AppState {
-    tabs: Vec<Tab>,
-    active_tab: usize,
-    next_tab_id: usize,
-    expanded_schemas: HashSet<String>,
-}
-
-impl AppState {
-    fn save_path() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-        Ok(home.join(".config").join("db-client").join("state.json"))
-    }
-
-    fn save(&self) -> Result<()> {
-        let path = Self::save_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let content = serde_json::to_string_pretty(self)?;
-        fs::write(&path, content)?;
-        Ok(())
-    }
-
-    fn load() -> Result<Self> {
-        let path = Self::save_path()?;
-        if path.exists() {
-            let content = fs::read_to_string(&path)?;
-            let state: AppState = serde_json::from_str(&content)?;
-            Ok(state)
-        } else {
-            Err(anyhow::anyhow!("State file does not exist"))
-        }
-    }
-}
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
