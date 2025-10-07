@@ -24,6 +24,8 @@ pub struct Tab {
     pub source: TabSource,
     // Filters for this tab
     pub filters: Vec<FilterRule>,
+    // Search text for quick search across all columns
+    pub search_text: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

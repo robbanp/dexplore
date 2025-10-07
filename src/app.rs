@@ -202,6 +202,7 @@ impl DbClientApp {
             page_size: 100,
             source,
             filters: Vec::new(),
+            search_text: String::new(),
         };
         self.next_tab_id += 1;
         self.tabs.push(tab);
@@ -431,17 +432,57 @@ impl eframe::App for DbClientApp {
                 }
             }
 
+            // Search field (above data grid)
+            let mut search_changed = false;
+            let mut search_cleared = false;
+            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                if tab.data.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.label("🔍");
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut tab.search_text)
+                                .hint_text("Search in current table...")
+                                .desired_width(300.0)
+                        );
+
+                        if response.changed() {
+                            search_changed = true;
+                        }
+
+                        if !tab.search_text.is_empty() && ui.small_button("✖").clicked() {
+                            tab.search_text.clear();
+                            search_cleared = true;
+                        }
+
+                        if !tab.search_text.is_empty() {
+                            ui.label(egui::RichText::new("(searching across all columns)")
+                                .size(10.0)
+                                .color(egui::Color32::GRAY));
+                        }
+                    });
+                    ui.add_space(5.0);
+                }
+            }
+
+            // Handle search state changes outside the borrow
+            if search_changed || search_cleared {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    tab.current_page = 0;
+                }
+                self.save_state();
+            }
+
             // Data grid with pagination
             // Extract values to avoid borrow checker issues
-            let (has_data, is_loading, sort_column, sort_ascending, current_page, page_size, total_rows) =
+            let (has_data, is_loading, sort_column, sort_ascending, current_page, page_size, total_rows, search_text) =
                 if let Some(tab) = self.tabs.get(self.active_tab) {
                     if let Some(data) = &tab.data {
-                        (true, false, tab.sort_column, tab.sort_ascending, tab.current_page, tab.page_size, Some(data.rows.len()))
+                        (true, false, tab.sort_column, tab.sort_ascending, tab.current_page, tab.page_size, Some(data.rows.len()), tab.search_text.clone())
                     } else {
-                        (false, tab.is_loading, None, true, 0, 100, None)
+                        (false, tab.is_loading, None, true, 0, 100, None, String::new())
                     }
                 } else {
-                    (false, false, None, true, 0, 100, None)
+                    (false, false, None, true, 0, 100, None, String::new())
                 };
 
             if has_data {
@@ -468,7 +509,7 @@ impl eframe::App for DbClientApp {
                 // Data grid
                 if let Some(tab) = self.tabs.get(self.active_tab) {
                     if let Some(data) = &tab.data {
-                        if let Some(event) = self.data_grid.show(ui, data, sort_column, sort_ascending, current_page, page_size, &tab.filters) {
+                        if let Some(event) = self.data_grid.show(ui, data, sort_column, sort_ascending, current_page, page_size, &tab.filters, &search_text) {
                             match event {
                                 DataGridEvent::ColumnSorted(col_index) => {
                                     self.sort_tab_data(self.active_tab, col_index);

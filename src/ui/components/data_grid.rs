@@ -43,6 +43,21 @@ impl DataGrid {
             .collect()
     }
 
+    fn apply_search(rows: &[Vec<String>], indices: Vec<usize>, search_text: &str) -> Vec<usize> {
+        if search_text.is_empty() {
+            return indices;
+        }
+
+        let search_lower = search_text.to_lowercase();
+        indices
+            .into_iter()
+            .filter(|&idx| {
+                // Search across all columns in the row
+                rows[idx].iter().any(|cell| cell.to_lowercase().contains(&search_lower))
+            })
+            .collect()
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -52,14 +67,18 @@ impl DataGrid {
         current_page: usize,
         page_size: usize,
         filters: &[FilterRule],
+        search_text: &str,
     ) -> Option<DataGridEvent> {
         let column_to_sort = Cell::new(None);
 
         // Apply filters to get indices of matching rows
         let filtered_indices = Self::apply_filters(&data.rows, filters);
 
-        // Calculate pagination on filtered data
-        let total_rows = filtered_indices.len();
+        // Apply search on filtered results
+        let searched_indices = Self::apply_search(&data.rows, filtered_indices, search_text);
+
+        // Calculate pagination on filtered and searched data
+        let total_rows = searched_indices.len();
         let start_row = current_page * page_size;
         let end_row = (start_row + page_size).min(total_rows);
 
@@ -129,8 +148,8 @@ impl DataGrid {
                         }
                     })
                     .body(|mut body| {
-                        // Only show rows for current page from filtered indices
-                        let page_indices = &filtered_indices[start_row..end_row];
+                        // Only show rows for current page from searched indices
+                        let page_indices = &searched_indices[start_row..end_row];
                         for (page_row_index, &original_row_index) in page_indices.iter().enumerate() {
                             let row = &data.rows[original_row_index];
                             let actual_row_index = start_row + page_row_index;
