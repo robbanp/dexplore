@@ -36,7 +36,13 @@ Simple PostgreSQL client I threw together in Rust. Uses egui for the GUI.
 - **Per-column filters** - filter by specific columns with operators (equals, contains, greater than, etc.)
 
 ### Query Execution
-- **SQL query panel** - write and execute custom SQL queries
+- **SQL query editor** with advanced features:
+  - **Syntax highlighting** - SQL keywords highlighted in pink/magenta
+  - **Auto-complete** - intelligent suggestions for tables, columns, and SQL keywords
+  - **Table suggestions** - shows available tables as you type (📋 icon)
+  - **Column suggestions** - shows columns from current result (📊 icon)
+  - **Keyword suggestions** - suggests SQL keywords (🔑 icon)
+  - **Keyboard navigation** - use arrow keys to navigate suggestions, Enter to select
 - **Keyboard shortcut** - Cmd+Enter (Mac) / Ctrl+Enter (Windows/Linux) to execute
 - **Query results in tabs** - results open in new tabs just like tables
 - **Per-tab queries** - each tab has its own query, switch between tabs to work on different queries
@@ -112,6 +118,15 @@ You can also set the `DATABASE_URL` environment variable.
 
 ### SQL Query Editor
 - Write SQL queries in the query panel (**View → Show Query Panel**)
+- **Syntax highlighting** makes SQL keywords easy to spot (pink/magenta)
+- **Context-aware auto-complete** with intelligent SQL parsing:
+  - After `FROM` or `JOIN` → Shows only **table names** 📋
+  - In `SELECT` clause → Shows **columns** 📊 and relevant keywords (DISTINCT, AS, FROM)
+  - In `WHERE` clause → Shows **columns** 📊 and operators (AND, OR, LIKE, IN)
+  - In `ORDER BY`/`GROUP BY` → Shows **columns** 📊 and modifiers (ASC, DESC)
+  - At query start → Shows query keywords (SELECT, INSERT, UPDATE)
+  - Use ↑/↓ arrows to navigate, Enter to select, Esc to dismiss
+- **Smart tokenizer** understands SQL syntax (keywords, operators, identifiers)
 - Execute with **Cmd/Ctrl + Enter** or click **Execute**
 - Each tab has its own query - switch between tabs to work on different queries
 - The executed SQL query is displayed above the results

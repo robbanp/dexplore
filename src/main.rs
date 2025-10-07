@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod db;
 mod models;
+mod sql_editor;
 mod ui;
 
 use app::DbClientApp;

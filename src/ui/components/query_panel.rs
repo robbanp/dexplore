@@ -1,4 +1,5 @@
 use eframe::egui;
+use crate::sql_editor::SqlEditor;
 
 #[derive(Debug)]
 pub enum QueryPanelEvent {
@@ -9,27 +10,38 @@ pub enum QueryPanelEvent {
     LoadQuery,
 }
 
-pub struct QueryPanel;
+pub struct QueryPanel {
+    sql_editor: SqlEditor,
+}
 
 impl QueryPanel {
     pub fn new() -> Self {
-        Self
+        Self {
+            sql_editor: SqlEditor::new(),
+        }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, query_input: &mut String) -> Option<QueryPanelEvent> {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        query_input: &mut String,
+        tables: &[String],
+        columns: &[String],
+    ) -> Option<QueryPanelEvent> {
         let mut event = None;
 
         ui.vertical(|ui| {
             ui.label("SQL Query:");
-            let response = ui.add(
-                egui::TextEdit::multiline(query_input)
-                    .desired_rows(3)
-                    .desired_width(f32::INFINITY)
-            );
 
+            let editor_response = self.sql_editor.show(ui, query_input, tables, columns);
+
+            if editor_response.execute {
+                event = Some(QueryPanelEvent::Execute);
+            }
+
+            ui.add_space(5.0);
             ui.horizontal(|ui| {
-                if ui.button("Execute").clicked() ||
-                   (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command)) {
+                if ui.button("Execute").clicked() {
                     event = Some(QueryPanelEvent::Execute);
                 }
                 if ui.button("Clear").clicked() {

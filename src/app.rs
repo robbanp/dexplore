@@ -329,11 +329,26 @@ impl eframe::App for DbClientApp {
 
         // Query panel (if shown) - syncs with active tab's query
         if self.show_query_panel {
+            // Collect available tables and columns for autocomplete
+            let available_tables: Vec<String> = self.schemas.iter()
+                .flat_map(|schema| schema.tables.iter().map(|t| format!("{}.{}", schema.name, t)))
+                .collect();
+
+            let available_columns: Vec<String> = if let Some(tab) = self.tabs.get(self.active_tab) {
+                if let Some(data) = &tab.data {
+                    data.columns.iter().map(|c| c.name.clone()).collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
             // Get or create query for active tab
             if self.tabs.is_empty() {
                 // No tabs, use global query_input
                 egui::TopBottomPanel::top("query_panel").show(ctx, |ui| {
-                    if let Some(event) = self.query_panel.show(ui, &mut self.query_input) {
+                    if let Some(event) = self.query_panel.show(ui, &mut self.query_input, &available_tables, &available_columns) {
                         match event {
                             QueryPanelEvent::Execute => self.execute_query(None),
                             QueryPanelEvent::Clear => self.query_input.clear(),
@@ -365,7 +380,7 @@ impl eframe::App for DbClientApp {
                 let mut load_query = false;
 
                 egui::TopBottomPanel::top("query_panel").show(ctx, |ui| {
-                    if let Some(event) = self.query_panel.show(ui, &mut temp_query) {
+                    if let Some(event) = self.query_panel.show(ui, &mut temp_query, &available_tables, &available_columns) {
                         match event {
                             QueryPanelEvent::Execute => execute = true,
                             QueryPanelEvent::Clear => clear = true,
