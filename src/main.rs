@@ -4,7 +4,7 @@ mod models;
 
 use anyhow::Result;
 use config::{Config, DatabaseConnection};
-use db::{ColumnInfo, Database, SchemaInfo};
+use db::{AsyncOperation, ColumnInfo, Database, SchemaInfo};
 use models::{AppState, Tab, TabSource, TableData};
 use eframe::egui;
 use poll_promise::Promise;
@@ -25,12 +25,6 @@ fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| Box::new(DbClientApp::new(cc))),
     )
-}
-
-enum AsyncOperation {
-    LoadStructure(Promise<Result<(Arc<Database>, Vec<SchemaInfo>)>>),
-    LoadTableData(String, String, Promise<Result<(Vec<ColumnInfo>, Vec<Vec<String>>)>>, Option<usize>), // schema, table, promise, optional tab_index for reload
-    ExecuteQuery(String, Promise<Result<(Vec<ColumnInfo>, Vec<Vec<String>>)>>, Option<usize>), // query, promise, optional tab_index for reload
 }
 
 struct DbClientApp {
