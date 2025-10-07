@@ -7,6 +7,7 @@ mod database_tree;
 mod tab_bar;
 mod pagination;
 mod data_grid;
+mod filter_bar;
 
 pub use menu_bar::{MenuBar, MenuBarEvent};
 pub use status_bar::StatusBar;
@@ -17,3 +18,4 @@ pub use database_tree::{DatabaseTree, DatabaseTreeEvent};
 pub use tab_bar::{TabBar, TabBarEvent};
 pub use pagination::{PaginationControls, PaginationEvent};
 pub use data_grid::{DataGrid, DataGridEvent};
+pub use filter_bar::{FilterBar, FilterBarEvent};

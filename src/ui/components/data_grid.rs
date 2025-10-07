@@ -1,4 +1,4 @@
-use crate::models::TableData;
+use crate::models::{TableData, FilterRule, FilterConjunction};
 use eframe::egui;
 use std::cell::Cell;
 
@@ -19,6 +19,30 @@ impl DataGrid {
         }
     }
 
+    fn apply_filters(rows: &[Vec<String>], filters: &[FilterRule]) -> Vec<usize> {
+        if filters.is_empty() {
+            return (0..rows.len()).collect();
+        }
+
+        rows.iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                let mut result = filters[0].matches_row(row);
+
+                for filter in filters.iter().skip(1) {
+                    let matches = filter.matches_row(row);
+                    result = match filter.conjunction {
+                        FilterConjunction::And => result && matches,
+                        FilterConjunction::Or => result || matches,
+                    };
+                }
+
+                result
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -27,11 +51,15 @@ impl DataGrid {
         sort_ascending: bool,
         current_page: usize,
         page_size: usize,
+        filters: &[FilterRule],
     ) -> Option<DataGridEvent> {
         let column_to_sort = Cell::new(None);
 
-        // Calculate pagination
-        let total_rows = data.rows.len();
+        // Apply filters to get indices of matching rows
+        let filtered_indices = Self::apply_filters(&data.rows, filters);
+
+        // Calculate pagination on filtered data
+        let total_rows = filtered_indices.len();
         let start_row = current_page * page_size;
         let end_row = (start_row + page_size).min(total_rows);
 
@@ -101,9 +129,10 @@ impl DataGrid {
                         }
                     })
                     .body(|mut body| {
-                        // Only show rows for current page
-                        let page_rows = &data.rows[start_row..end_row];
-                        for (page_row_index, row) in page_rows.iter().enumerate() {
+                        // Only show rows for current page from filtered indices
+                        let page_indices = &filtered_indices[start_row..end_row];
+                        for (page_row_index, &original_row_index) in page_indices.iter().enumerate() {
+                            let row = &data.rows[original_row_index];
                             let actual_row_index = start_row + page_row_index;
                             let is_selected = self.selected_row == Some(actual_row_index);
 

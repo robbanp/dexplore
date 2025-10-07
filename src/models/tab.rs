@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use crate::db::ColumnInfo;
+use crate::models::FilterRule;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TableData {
@@ -21,6 +22,8 @@ pub struct Tab {
     pub page_size: usize,
     // Track the source for reloading
     pub source: TabSource,
+    // Filters for this tab
+    pub filters: Vec<FilterRule>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

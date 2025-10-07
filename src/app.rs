@@ -54,6 +54,7 @@ pub struct DbClientApp {
     tab_bar: TabBar,
     pagination: PaginationControls,
     data_grid: DataGrid,
+    filter_bar: FilterBar,
 }
 
 impl DbClientApp {
@@ -123,6 +124,7 @@ impl DbClientApp {
             tab_bar: TabBar::new(),
             pagination: PaginationControls::new(),
             data_grid: DataGrid::new(),
+            filter_bar: FilterBar::new(),
         };
 
         // Auto-connect on startup
@@ -199,6 +201,7 @@ impl DbClientApp {
             current_page: 0,
             page_size: 100,
             source,
+            filters: Vec::new(),
         };
         self.next_tab_id += 1;
         self.tabs.push(tab);
@@ -410,6 +413,24 @@ impl eframe::App for DbClientApp {
                 }
             }
 
+            // Filter bar
+            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                if let Some(data) = &tab.data {
+                    if let Some(event) = self.filter_bar.show(ui, &mut tab.filters, &data.columns) {
+                        match event {
+                            FilterBarEvent::FilterAdded | FilterBarEvent::FilterRemoved(_) | FilterBarEvent::FiltersChanged => {
+                                // Filters changed, will be applied on next render
+                                self.save_state();
+                            }
+                            FilterBarEvent::FilterApplied => {
+                                // User clicked apply, could trigger re-render or show message
+                            }
+                        }
+                    }
+                    ui.separator();
+                }
+            }
+
             // Data grid with pagination
             // Extract values to avoid borrow checker issues
             let (has_data, is_loading, sort_column, sort_ascending, current_page, page_size, total_rows) =
@@ -447,7 +468,7 @@ impl eframe::App for DbClientApp {
                 // Data grid
                 if let Some(tab) = self.tabs.get(self.active_tab) {
                     if let Some(data) = &tab.data {
-                        if let Some(event) = self.data_grid.show(ui, data, sort_column, sort_ascending, current_page, page_size) {
+                        if let Some(event) = self.data_grid.show(ui, data, sort_column, sort_ascending, current_page, page_size, &tab.filters) {
                             match event {
                                 DataGridEvent::ColumnSorted(col_index) => {
                                     self.sort_tab_data(self.active_tab, col_index);
