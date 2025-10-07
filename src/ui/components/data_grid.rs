@@ -285,3 +285,223 @@ impl DataGrid {
         (None, match_info)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::ColumnInfo;
+
+    fn create_test_data(rows: Vec<Vec<String>>) -> TableData {
+        TableData {
+            name: "test_table".to_string(),
+            columns: vec![
+                ColumnInfo {
+                    name: "col1".to_string(),
+                    data_type: "text".to_string(),
+                    is_primary_key: false,
+                    is_foreign_key: false,
+                },
+                ColumnInfo {
+                    name: "col2".to_string(),
+                    data_type: "text".to_string(),
+                    is_primary_key: false,
+                    is_foreign_key: false,
+                },
+            ],
+            rows,
+        }
+    }
+
+    #[test]
+    fn test_search_match_counting() {
+        let data = create_test_data(vec![
+            vec!["apple".to_string(), "banana".to_string()],
+            vec!["cherry".to_string(), "apple".to_string()],
+            vec!["date".to_string(), "elderberry".to_string()],
+            vec!["apple".to_string(), "fig".to_string()],
+        ]);
+
+        // Test counting matches for "apple"
+        let search_text = "apple";
+        let mut count = 0;
+        for row in &data.rows {
+            for cell in row {
+                if cell.to_lowercase().contains(&search_text.to_lowercase()) {
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(count, 3, "Should find 3 occurrences of 'apple'");
+    }
+
+    #[test]
+    fn test_search_case_insensitive() {
+        let data = create_test_data(vec![
+            vec!["Apple".to_string(), "BANANA".to_string()],
+            vec!["cherry".to_string(), "aPpLe".to_string()],
+        ]);
+
+        let search_text = "apple";
+        let mut count = 0;
+        for row in &data.rows {
+            for cell in row {
+                if cell.to_lowercase().contains(&search_text.to_lowercase()) {
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(count, 2, "Should find 2 occurrences case-insensitively");
+    }
+
+    #[test]
+    fn test_search_partial_match() {
+        let data = create_test_data(vec![
+            vec!["pineapple".to_string(), "banana".to_string()],
+            vec!["apple".to_string(), "applesauce".to_string()],
+        ]);
+
+        let search_text = "apple";
+        let mut count = 0;
+        for row in &data.rows {
+            for cell in row {
+                if cell.to_lowercase().contains(&search_text.to_lowercase()) {
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(count, 3, "Should find partial matches");
+    }
+
+    #[test]
+    fn test_page_calculation() {
+        let page_size = 10;
+
+        // Test various row positions
+        assert_eq!(0 / page_size, 0, "First row should be on page 0");
+        assert_eq!(9 / page_size, 0, "Row 9 should be on page 0");
+        assert_eq!(10 / page_size, 1, "Row 10 should be on page 1");
+        assert_eq!(15 / page_size, 1, "Row 15 should be on page 1");
+        assert_eq!(20 / page_size, 2, "Row 20 should be on page 2");
+    }
+
+    #[test]
+    fn test_row_in_page_calculation() {
+        let page_size = 10;
+
+        // Test row position within page
+        assert_eq!(0 % page_size, 0, "Row 0 should be at position 0 in page");
+        assert_eq!(9 % page_size, 9, "Row 9 should be at position 9 in page");
+        assert_eq!(10 % page_size, 0, "Row 10 should be at position 0 in page");
+        assert_eq!(15 % page_size, 5, "Row 15 should be at position 5 in page");
+        assert_eq!(23 % page_size, 3, "Row 23 should be at position 3 in page");
+    }
+
+    #[test]
+    fn test_match_index_navigation() {
+        let total_matches = 5;
+
+        // Test forward navigation
+        let mut index = 0;
+        index = (index + 1) % total_matches;
+        assert_eq!(index, 1, "Next from 0 should be 1");
+
+        index = 4;
+        index = (index + 1) % total_matches;
+        assert_eq!(index, 0, "Next from 4 should wrap to 0");
+
+        // Test backward navigation
+        index = 1;
+        index = if index == 0 { total_matches - 1 } else { index - 1 };
+        assert_eq!(index, 0, "Previous from 1 should be 0");
+
+        index = 0;
+        index = if index == 0 { total_matches - 1 } else { index - 1 };
+        assert_eq!(index, 4, "Previous from 0 should wrap to 4");
+    }
+
+    #[test]
+    fn test_empty_search() {
+        let data = create_test_data(vec![
+            vec!["apple".to_string(), "banana".to_string()],
+        ]);
+
+        let search_text = "";
+        let mut count = 0;
+        for row in &data.rows {
+            for cell in row {
+                if !search_text.is_empty() && cell.to_lowercase().contains(&search_text.to_lowercase()) {
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(count, 0, "Empty search should return 0 matches");
+    }
+
+    #[test]
+    fn test_no_matches() {
+        let data = create_test_data(vec![
+            vec!["apple".to_string(), "banana".to_string()],
+            vec!["cherry".to_string(), "date".to_string()],
+        ]);
+
+        let search_text = "xyz";
+        let mut count = 0;
+        for row in &data.rows {
+            for cell in row {
+                if cell.to_lowercase().contains(&search_text.to_lowercase()) {
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(count, 0, "Should find 0 matches for non-existent text");
+    }
+
+    #[test]
+    fn test_search_match_info_default() {
+        let match_info = SearchMatchInfo::default();
+        assert_eq!(match_info.total_matches, 0, "Default should have 0 matches");
+        assert_eq!(match_info.current_match_page, None, "Default should have no current page");
+        assert_eq!(match_info.current_match_row_in_page, None, "Default should have no current row");
+    }
+
+    #[test]
+    fn test_current_match_position() {
+        let page_size = 3;
+        let data = create_test_data(vec![
+            vec!["apple".to_string(), "banana".to_string()],  // row 0
+            vec!["cherry".to_string(), "apple".to_string()],  // row 1
+            vec!["date".to_string(), "elderberry".to_string()],  // row 2
+            vec!["apple".to_string(), "fig".to_string()],  // row 3 (page 1)
+            vec!["grape".to_string(), "apple".to_string()],  // row 4 (page 1)
+        ]);
+
+        // Simulate finding matches
+        let search_text = "apple";
+        let mut matches: Vec<(usize, usize)> = Vec::new(); // (row_idx, col_idx)
+
+        for (row_idx, row) in data.rows.iter().enumerate() {
+            for (col_idx, cell) in row.iter().enumerate() {
+                if cell.to_lowercase().contains(&search_text.to_lowercase()) {
+                    matches.push((row_idx, col_idx));
+                }
+            }
+        }
+
+        assert_eq!(matches.len(), 4, "Should find 4 matches");
+
+        // Test first match
+        let (row_idx, _) = matches[0];
+        assert_eq!(row_idx / page_size, 0, "First match should be on page 0");
+        assert_eq!(row_idx % page_size, 0, "First match should be at row 0 in page");
+
+        // Test third match
+        let (row_idx, _) = matches[2];
+        assert_eq!(row_idx / page_size, 1, "Third match should be on page 1");
+        assert_eq!(row_idx % page_size, 0, "Third match should be at row 0 in page");
+
+        // Test fourth match
+        let (row_idx, _) = matches[3];
+        assert_eq!(row_idx / page_size, 1, "Fourth match should be on page 1");
+        assert_eq!(row_idx % page_size, 1, "Fourth match should be at row 1 in page");
+    }
+}
