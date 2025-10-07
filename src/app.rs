@@ -22,6 +22,7 @@ pub struct DbClientApp {
     pub schemas: Vec<SchemaInfo>,
     pub expanded_schemas: HashSet<String>,
     pub selected_table: Option<(String, String)>, // (schema, table)
+    pub search_query: String,
 
     // Tabs
     pub tabs: Vec<Tab>,
@@ -102,6 +103,7 @@ impl DbClientApp {
             schemas: Vec::new(),
             expanded_schemas,
             selected_table: None,
+            search_query: String::new(),
             tabs,
             active_tab,
             next_tab_id,
@@ -368,7 +370,7 @@ impl eframe::App for DbClientApp {
                 ui.heading("Database Structure");
                 ui.separator();
 
-                if let Some(event) = self.database_tree.show(ui, &self.schemas, &self.expanded_schemas, &self.selected_table) {
+                if let Some(event) = self.database_tree.show(ui, &self.schemas, &self.expanded_schemas, &self.selected_table, &mut self.search_query) {
                     match event {
                         DatabaseTreeEvent::TableClicked(schema, table) => {
                             self.selected_table = Some((schema.clone(), table.clone()));
@@ -385,6 +387,9 @@ impl eframe::App for DbClientApp {
                                 self.expanded_schemas.insert(schema_name);
                             }
                             self.save_state();
+                        }
+                        DatabaseTreeEvent::SearchChanged(_query) => {
+                            // Search query already updated via mutable reference
                         }
                     }
                 }
