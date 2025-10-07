@@ -203,6 +203,7 @@ impl DbClientApp {
             source,
             filters: Vec::new(),
             search_text: String::new(),
+            search_match_index: 0,
         };
         self.next_tab_id += 1;
         self.tabs.push(tab);
@@ -432,11 +433,19 @@ impl eframe::App for DbClientApp {
                 }
             }
 
-            // Search field (above data grid)
+            // Search field (above data grid) - stored for later use after getting match count
             let mut search_changed = false;
             let mut search_cleared = false;
+            let mut next_match = false;
+            let mut prev_match = false;
+            let mut search_text_for_ui = String::new();
+            let mut current_match_idx = 0;
+
             if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                 if tab.data.is_some() {
+                    search_text_for_ui = tab.search_text.clone();
+                    current_match_idx = tab.search_match_index;
+
                     ui.horizontal(|ui| {
                         ui.label("🔍");
                         let response = ui.add(
@@ -449,15 +458,19 @@ impl eframe::App for DbClientApp {
                             search_changed = true;
                         }
 
+                        if !tab.search_text.is_empty() {
+                            // Navigation arrows
+                            if ui.button("◀").on_hover_text("Previous match").clicked() {
+                                prev_match = true;
+                            }
+                            if ui.button("▶").on_hover_text("Next match").clicked() {
+                                next_match = true;
+                            }
+                        }
+
                         if !tab.search_text.is_empty() && ui.small_button("✖").clicked() {
                             tab.search_text.clear();
                             search_cleared = true;
-                        }
-
-                        if !tab.search_text.is_empty() {
-                            ui.label(egui::RichText::new("(searching across all columns)")
-                                .size(10.0)
-                                .color(egui::Color32::GRAY));
                         }
                     });
                     ui.add_space(5.0);
@@ -468,22 +481,26 @@ impl eframe::App for DbClientApp {
             if search_changed || search_cleared {
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                     tab.current_page = 0;
+                    tab.search_match_index = 0;
                 }
                 self.save_state();
             }
 
+
             // Data grid with pagination
             // Extract values to avoid borrow checker issues
-            let (has_data, is_loading, sort_column, sort_ascending, current_page, page_size, total_rows, search_text) =
+            let (has_data, is_loading, sort_column, sort_ascending, current_page, page_size, total_rows, search_text, search_match_index) =
                 if let Some(tab) = self.tabs.get(self.active_tab) {
                     if let Some(data) = &tab.data {
-                        (true, false, tab.sort_column, tab.sort_ascending, tab.current_page, tab.page_size, Some(data.rows.len()), tab.search_text.clone())
+                        (true, false, tab.sort_column, tab.sort_ascending, tab.current_page, tab.page_size, Some(data.rows.len()), tab.search_text.clone(), tab.search_match_index)
                     } else {
-                        (false, tab.is_loading, None, true, 0, 100, None, String::new())
+                        (false, tab.is_loading, None, true, 0, 100, None, String::new(), 0)
                     }
                 } else {
-                    (false, false, None, true, 0, 100, None, String::new())
+                    (false, false, None, true, 0, 100, None, String::new(), 0)
                 };
+
+            let mut total_matches = 0;
 
             if has_data {
                 // Pagination controls
@@ -509,7 +526,41 @@ impl eframe::App for DbClientApp {
                 // Data grid
                 if let Some(tab) = self.tabs.get(self.active_tab) {
                     if let Some(data) = &tab.data {
-                        if let Some(event) = self.data_grid.show(ui, data, sort_column, sort_ascending, current_page, page_size, &tab.filters, &search_text) {
+                        let (event, match_info) = self.data_grid.show(ui, data, sort_column, sort_ascending, current_page, page_size, &tab.filters, &search_text, search_match_index);
+
+                        // Update match info and handle navigation
+                        total_matches = match_info.total_matches;
+
+                        // Auto-navigate to page containing current match
+                        if let Some(page) = match_info.current_match_page {
+                            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                                if tab.current_page != page {
+                                    tab.current_page = page;
+                                }
+                            }
+                        }
+
+                        // Handle navigation arrows
+                        if next_match && total_matches > 0 {
+                            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                                tab.search_match_index = (tab.search_match_index + 1) % total_matches;
+                                ctx.request_repaint(); // Repaint to recalculate page for new match
+                            }
+                        }
+
+                        if prev_match && total_matches > 0 {
+                            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                                tab.search_match_index = if tab.search_match_index == 0 {
+                                    total_matches - 1
+                                } else {
+                                    tab.search_match_index - 1
+                                };
+                                ctx.request_repaint(); // Repaint to recalculate page for new match
+                            }
+                        }
+
+                        // Handle data grid events
+                        if let Some(event) = event {
                             match event {
                                 DataGridEvent::ColumnSorted(col_index) => {
                                     self.sort_tab_data(self.active_tab, col_index);
@@ -520,6 +571,18 @@ impl eframe::App for DbClientApp {
                             }
                         }
                     }
+                }
+
+                // Show match counter if there's an active search
+                if !search_text_for_ui.is_empty() && total_matches > 0 {
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(
+                            egui::RichText::new(format!("Match {} of {}", current_match_idx + 1, total_matches))
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(100, 100, 255))
+                        );
+                    });
                 }
             } else if is_loading {
                 ui.centered_and_justified(|ui| {

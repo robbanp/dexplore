@@ -8,6 +8,13 @@ pub enum DataGridEvent {
     RowSelected(Option<usize>),
 }
 
+#[derive(Debug, Default)]
+pub struct SearchMatchInfo {
+    pub total_matches: usize,
+    pub current_match_page: Option<usize>,
+    pub current_match_row_in_page: Option<usize>, // Row index within the current page
+}
+
 pub struct DataGrid {
     selected_row: Option<usize>,
 }
@@ -53,7 +60,8 @@ impl DataGrid {
         page_size: usize,
         filters: &[FilterRule],
         search_text: &str,
-    ) -> Option<DataGridEvent> {
+        current_match_index: usize,
+    ) -> (Option<DataGridEvent>, SearchMatchInfo) {
         let column_to_sort = Cell::new(None);
 
         // Apply filters to get indices of matching rows
@@ -66,6 +74,30 @@ impl DataGrid {
 
         let search_lower = search_text.to_lowercase();
 
+        // Collect all search matches across filtered data to determine total count and current match position
+        let mut match_info = SearchMatchInfo::default();
+        let mut current_match_cell_position: Option<(usize, usize)> = None; // (row_index, col_index)
+        if !search_lower.is_empty() {
+            let mut match_count = 0;
+            for (filtered_idx, &original_row_idx) in filtered_indices.iter().enumerate() {
+                let row = &data.rows[original_row_idx];
+                for (col_idx, cell) in row.iter().enumerate() {
+                    if cell.to_lowercase().contains(&search_lower) {
+                        if match_count == current_match_index {
+                            // This is the current match - calculate its page and position
+                            let page = filtered_idx / page_size;
+                            let row_in_page = filtered_idx % page_size;
+                            match_info.current_match_page = Some(page);
+                            match_info.current_match_row_in_page = Some(row_in_page);
+                            current_match_cell_position = Some((original_row_idx, col_idx));
+                        }
+                        match_count += 1;
+                    }
+                }
+            }
+            match_info.total_matches = match_count;
+        }
+
         let available_height = ui.available_height();
         egui::ScrollArea::both()
             .id_source("data_grid")
@@ -74,7 +106,7 @@ impl DataGrid {
             .show(ui, |ui| {
                 use egui_extras::{Column, TableBuilder};
 
-                let table = TableBuilder::new(ui)
+                let mut table = TableBuilder::new(ui)
                     .striped(true)
                     .resizable(true)
                     .vscroll(true)
@@ -82,6 +114,11 @@ impl DataGrid {
                     .column(Column::initial(50.0).at_least(40.0).resizable(false)) // Line number column
                     .columns(Column::initial(120.0).at_least(80.0).resizable(true).clip(true), data.columns.len())
                     .min_scrolled_height(available_height);
+
+                // Scroll to the row containing the current match
+                if let Some(row_in_page) = match_info.current_match_row_in_page {
+                    table = table.scroll_to_row(row_in_page, Some(egui::Align::Center));
+                }
 
                 table
                     .header(22.0, |mut header| {
@@ -171,7 +208,7 @@ impl DataGrid {
                                 });
 
                                 // Data cells
-                                for cell in row {
+                                for (col_idx, cell) in row.iter().enumerate() {
                                     row_ui.col(|ui| {
                                         // Get the full cell rect
                                         let rect = ui.available_rect_before_wrap();
@@ -180,6 +217,11 @@ impl DataGrid {
                                         let has_search_match = !search_lower.is_empty()
                                             && cell.to_lowercase().contains(&search_lower);
 
+                                        // Check if this is the current match
+                                        let is_current_match = current_match_cell_position
+                                            .map(|(row_idx, c_idx)| row_idx == original_row_index && c_idx == col_idx)
+                                            .unwrap_or(false);
+
                                         // Add background color for selected row or search match
                                         if is_selected {
                                             ui.painter().rect_filled(
@@ -187,11 +229,17 @@ impl DataGrid {
                                                 0.0,
                                                 egui::Color32::from_rgb(200, 200, 200)
                                             );
+                                        } else if is_current_match {
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                0.0,
+                                                egui::Color32::from_rgb(255, 180, 100)  // Orange highlight for current match
+                                            );
                                         } else if has_search_match {
                                             ui.painter().rect_filled(
                                                 rect,
                                                 0.0,
-                                                egui::Color32::from_rgb(255, 255, 150)  // Yellow highlight for search matches
+                                                egui::Color32::from_rgb(255, 255, 150)  // Yellow highlight for other search matches
                                             );
                                         }
 
@@ -231,9 +279,9 @@ impl DataGrid {
 
         // Handle column sort after the immutable borrow is released
         if let Some(col_index) = column_to_sort.get() {
-            return Some(DataGridEvent::ColumnSorted(col_index));
+            return (Some(DataGridEvent::ColumnSorted(col_index)), match_info);
         }
 
-        None
+        (None, match_info)
     }
 }

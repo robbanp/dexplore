@@ -26,6 +26,9 @@ pub struct Tab {
     pub filters: Vec<FilterRule>,
     // Search text for quick search across all columns
     pub search_text: String,
+    // Current search match index for navigation
+    #[serde(skip)]
+    pub search_match_index: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
