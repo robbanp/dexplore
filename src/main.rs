@@ -1,9 +1,11 @@
 mod config;
 mod db;
+mod models;
 
 use anyhow::Result;
 use config::{Config, DatabaseConnection};
 use db::{ColumnInfo, Database, SchemaInfo};
+use models::{Tab, TabSource, TableData};
 use eframe::egui;
 use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
@@ -63,34 +65,6 @@ fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| Box::new(DbClientApp::new(cc))),
     )
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct TableData {
-    name: String,
-    columns: Vec<ColumnInfo>,
-    rows: Vec<Vec<String>>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct Tab {
-    id: usize,
-    title: String,
-    data: Option<TableData>,
-    #[serde(skip)]
-    is_loading: bool,
-    sort_column: Option<usize>,
-    sort_ascending: bool,
-    current_page: usize,
-    page_size: usize,
-    // Track the source for reloading
-    source: TabSource,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-enum TabSource {
-    Table { schema: String, table: String },
-    Query { sql: String },
 }
 
 enum AsyncOperation {
