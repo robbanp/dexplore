@@ -43,21 +43,6 @@ impl DataGrid {
             .collect()
     }
 
-    fn apply_search(rows: &[Vec<String>], indices: Vec<usize>, search_text: &str) -> Vec<usize> {
-        if search_text.is_empty() {
-            return indices;
-        }
-
-        let search_lower = search_text.to_lowercase();
-        indices
-            .into_iter()
-            .filter(|&idx| {
-                // Search across all columns in the row
-                rows[idx].iter().any(|cell| cell.to_lowercase().contains(&search_lower))
-            })
-            .collect()
-    }
-
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -74,13 +59,12 @@ impl DataGrid {
         // Apply filters to get indices of matching rows
         let filtered_indices = Self::apply_filters(&data.rows, filters);
 
-        // Apply search on filtered results
-        let searched_indices = Self::apply_search(&data.rows, filtered_indices, search_text);
-
-        // Calculate pagination on filtered and searched data
-        let total_rows = searched_indices.len();
+        // Calculate pagination on filtered data (no filtering by search, just highlighting)
+        let total_rows = filtered_indices.len();
         let start_row = current_page * page_size;
         let end_row = (start_row + page_size).min(total_rows);
+
+        let search_lower = search_text.to_lowercase();
 
         let available_height = ui.available_height();
         egui::ScrollArea::both()
@@ -148,8 +132,8 @@ impl DataGrid {
                         }
                     })
                     .body(|mut body| {
-                        // Only show rows for current page from searched indices
-                        let page_indices = &searched_indices[start_row..end_row];
+                        // Only show rows for current page from filtered indices
+                        let page_indices = &filtered_indices[start_row..end_row];
                         for (page_row_index, &original_row_index) in page_indices.iter().enumerate() {
                             let row = &data.rows[original_row_index];
                             let actual_row_index = start_row + page_row_index;
@@ -192,12 +176,22 @@ impl DataGrid {
                                         // Get the full cell rect
                                         let rect = ui.available_rect_before_wrap();
 
-                                        // Add background color for selected row
+                                        // Check if this cell matches the search text
+                                        let has_search_match = !search_lower.is_empty()
+                                            && cell.to_lowercase().contains(&search_lower);
+
+                                        // Add background color for selected row or search match
                                         if is_selected {
                                             ui.painter().rect_filled(
                                                 rect,
                                                 0.0,
                                                 egui::Color32::from_rgb(200, 200, 200)
+                                            );
+                                        } else if has_search_match {
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                0.0,
+                                                egui::Color32::from_rgb(255, 255, 150)  // Yellow highlight for search matches
                                             );
                                         }
 
