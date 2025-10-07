@@ -3,12 +3,52 @@ mod db;
 
 use anyhow::Result;
 use config::{Config, DatabaseConnection};
-use db::{Database, SchemaInfo};
+use db::{ColumnInfo, Database, SchemaInfo};
 use eframe::egui;
 use poll_promise::Promise;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::cell::Cell;
+
+#[derive(Serialize, Deserialize)]
+struct AppState {
+    tabs: Vec<Tab>,
+    active_tab: usize,
+    next_tab_id: usize,
+    expanded_schemas: HashSet<String>,
+}
+
+impl AppState {
+    fn save_path() -> Result<PathBuf> {
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+        Ok(home.join(".config").join("db-client").join("state.json"))
+    }
+
+    fn save(&self) -> Result<()> {
+        let path = Self::save_path()?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string_pretty(self)?;
+        fs::write(&path, content)?;
+        Ok(())
+    }
+
+    fn load() -> Result<Self> {
+        let path = Self::save_path()?;
+        if path.exists() {
+            let content = fs::read_to_string(&path)?;
+            let state: AppState = serde_json::from_str(&content)?;
+            Ok(state)
+        } else {
+            Err(anyhow::anyhow!("State file does not exist"))
+        }
+    }
+}
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
@@ -25,28 +65,38 @@ fn main() -> Result<(), eframe::Error> {
     )
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct TableData {
     name: String,
-    columns: Vec<String>,
+    columns: Vec<ColumnInfo>,
     rows: Vec<Vec<String>>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 struct Tab {
     id: usize,
     title: String,
     data: Option<TableData>,
+    #[serde(skip)]
     is_loading: bool,
     sort_column: Option<usize>,
     sort_ascending: bool,
     current_page: usize,
     page_size: usize,
+    // Track the source for reloading
+    source: TabSource,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+enum TabSource {
+    Table { schema: String, table: String },
+    Query { sql: String },
 }
 
 enum AsyncOperation {
     LoadStructure(Promise<Result<(Arc<Database>, Vec<SchemaInfo>)>>),
-    LoadTableData(String, String, Promise<Result<(Vec<String>, Vec<Vec<String>>)>>), // schema, table
-    ExecuteQuery(String, Promise<Result<(Vec<String>, Vec<Vec<String>>)>>),
+    LoadTableData(String, String, Promise<Result<(Vec<ColumnInfo>, Vec<Vec<String>>)>>, Option<usize>), // schema, table, promise, optional tab_index for reload
+    ExecuteQuery(String, Promise<Result<(Vec<ColumnInfo>, Vec<Vec<String>>)>>, Option<usize>), // query, promise, optional tab_index for reload
 }
 
 struct DbClientApp {
@@ -87,28 +137,38 @@ struct DbClientApp {
 }
 
 impl DbClientApp {
+    fn save_state(&self) {
+        let state = AppState {
+            tabs: self.tabs.clone(),
+            active_tab: self.active_tab,
+            next_tab_id: self.next_tab_id,
+            expanded_schemas: self.expanded_schemas.clone(),
+        };
+        let _ = state.save(); // Ignore errors when saving state
+    }
+
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Set default text style to use monospace for better data display
         let mut style = (*cc.egui_ctx.style()).clone();
         style.text_styles.insert(
             egui::TextStyle::Body,
-            egui::FontId::new(13.0, egui::FontFamily::Monospace)
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Button,
-            egui::FontId::new(13.0, egui::FontFamily::Monospace)
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Heading,
-            egui::FontId::new(16.0, egui::FontFamily::Monospace)
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Small,
             egui::FontId::new(11.0, egui::FontFamily::Monospace)
         );
         style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::new(11.0, egui::FontFamily::Monospace)
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::new(14.0, egui::FontFamily::Monospace)
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::new(9.0, egui::FontFamily::Monospace)
+        );
+        style.text_styles.insert(
             egui::TextStyle::Monospace,
-            egui::FontId::new(13.0, egui::FontFamily::Monospace)
+            egui::FontId::new(11.0, egui::FontFamily::Monospace)
         );
         cc.egui_ctx.set_style(style);
 
@@ -128,6 +188,13 @@ impl DbClientApp {
                 .expect("Failed to create tokio runtime")
         );
 
+        // Try to restore previous state
+        let (tabs, active_tab, next_tab_id, expanded_schemas) = if let Ok(state) = AppState::load() {
+            (state.tabs, state.active_tab, state.next_tab_id, state.expanded_schemas)
+        } else {
+            (Vec::new(), 0, 0, HashSet::new())
+        };
+
         let mut app = Self {
             config,
             connection_string,
@@ -135,12 +202,12 @@ impl DbClientApp {
             connection_status: "Not connected".to_string(),
             runtime,
             schemas: Vec::new(),
-            expanded_schemas: HashSet::new(),
+            expanded_schemas,
             selected_table: None,
             selected_row: None,
-            tabs: Vec::new(),
-            active_tab: 0,
-            next_tab_id: 0,
+            tabs,
+            active_tab,
+            next_tab_id,
             query_input: String::new(),
             show_query_panel: false,
             pending_operation: None,
@@ -173,7 +240,7 @@ impl DbClientApp {
         ));
     }
 
-    fn load_table_data(&mut self, schema: String, table_name: String) {
+    fn load_table_data(&mut self, schema: String, table_name: String, tab_index: Option<usize>) {
         if let Some(db) = &self.database {
             self.status_message = format!("Loading table: {}.{}", schema, table_name);
             let db_clone = Arc::clone(db);
@@ -188,11 +255,11 @@ impl DbClientApp {
                 })
             });
 
-            self.pending_operation = Some(AsyncOperation::LoadTableData(schema_clone, table_name_clone, promise));
+            self.pending_operation = Some(AsyncOperation::LoadTableData(schema_clone, table_name_clone, promise, tab_index));
         }
     }
 
-    fn execute_query(&mut self) {
+    fn execute_query(&mut self, tab_index: Option<usize>) {
         if let Some(db) = &self.database {
             let query = self.query_input.clone();
             if query.trim().is_empty() {
@@ -210,11 +277,11 @@ impl DbClientApp {
                 })
             });
 
-            self.pending_operation = Some(AsyncOperation::ExecuteQuery(query, promise));
+            self.pending_operation = Some(AsyncOperation::ExecuteQuery(query, promise, tab_index));
         }
     }
 
-    fn add_tab(&mut self, title: String, data: Option<TableData>) {
+    fn add_tab(&mut self, title: String, data: Option<TableData>, source: TabSource) {
         let tab = Tab {
             id: self.next_tab_id,
             title,
@@ -224,10 +291,28 @@ impl DbClientApp {
             sort_ascending: true,
             current_page: 0,
             page_size: 100, // Default to 100 rows per page
+            source,
         };
         self.next_tab_id += 1;
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
+        self.save_state();
+    }
+
+    fn reload_current_tab(&mut self) {
+        if let Some(tab) = self.tabs.get(self.active_tab) {
+            let source = tab.source.clone();
+            let tab_index = self.active_tab;
+            match source {
+                TabSource::Table { schema, table } => {
+                    self.load_table_data(schema, table, Some(tab_index));
+                }
+                TabSource::Query { sql } => {
+                    self.query_input = sql;
+                    self.execute_query(Some(tab_index));
+                }
+            }
+        }
     }
 
     fn sort_tab_data(&mut self, tab_index: usize, column_index: usize) {
@@ -256,6 +341,7 @@ impl DbClientApp {
                     if ascending { cmp } else { cmp.reverse() }
                 });
             }
+            self.save_state();
         }
     }
 
@@ -265,15 +351,21 @@ impl DbClientApp {
             if self.active_tab >= self.tabs.len() && self.active_tab > 0 {
                 self.active_tab = self.tabs.len() - 1;
             }
+            self.save_state();
         }
     }
 }
 
 impl eframe::App for DbClientApp {
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        // Save state when app closes
+        self.save_state();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Handle pending async operations
         let mut should_clear_operation = false;
-        let mut tab_to_add: Option<(String, Option<TableData>)> = None;
+        let mut tab_to_add: Option<(String, Option<TableData>, TabSource)> = None;
         let mut new_schemas: Option<Vec<SchemaInfo>> = None;
         let mut new_database: Option<Arc<Database>> = None;
         let mut new_status = None;
@@ -302,7 +394,7 @@ impl eframe::App for DbClientApp {
                         should_clear_operation = true;
                     }
                 }
-                AsyncOperation::LoadTableData(schema, table_name, promise) => {
+                AsyncOperation::LoadTableData(schema, table_name, promise, tab_index) => {
                     if let Some(result) = promise.ready() {
                         match result {
                             Ok((columns, rows)) => {
@@ -311,8 +403,22 @@ impl eframe::App for DbClientApp {
                                     columns: columns.clone(),
                                     rows: rows.clone(),
                                 };
-                                tab_to_add = Some((format!("{}.{}", schema, table_name), Some(data)));
-                                new_status = Some(format!("Loaded {} rows from {}.{}", rows.len(), schema, table_name));
+
+                                if let Some(idx) = tab_index {
+                                    // Update existing tab
+                                    if let Some(tab) = self.tabs.get_mut(*idx) {
+                                        tab.data = Some(data);
+                                    }
+                                    new_status = Some(format!("Reloaded {} rows from {}.{}", rows.len(), schema, table_name));
+                                } else {
+                                    // Create new tab
+                                    let source = TabSource::Table {
+                                        schema: schema.clone(),
+                                        table: table_name.clone(),
+                                    };
+                                    tab_to_add = Some((format!("{}.{}", schema, table_name), Some(data), source));
+                                    new_status = Some(format!("Loaded {} rows from {}.{}", rows.len(), schema, table_name));
+                                }
                             }
                             Err(e) => {
                                 new_status = Some(format!("Error loading table: {}", e));
@@ -321,7 +427,7 @@ impl eframe::App for DbClientApp {
                         should_clear_operation = true;
                     }
                 }
-                AsyncOperation::ExecuteQuery(_query, promise) => {
+                AsyncOperation::ExecuteQuery(query, promise, tab_index) => {
                     if let Some(result) = promise.ready() {
                         match result {
                             Ok((columns, rows)) => {
@@ -330,9 +436,22 @@ impl eframe::App for DbClientApp {
                                     columns: columns.clone(),
                                     rows: rows.clone(),
                                 };
-                                tab_to_add = Some(("Query Result".to_string(), Some(data)));
-                                new_status = Some(format!("Query returned {} rows", rows.len()));
-                                close_query_panel = true;
+
+                                if let Some(idx) = tab_index {
+                                    // Update existing tab
+                                    if let Some(tab) = self.tabs.get_mut(*idx) {
+                                        tab.data = Some(data);
+                                    }
+                                    new_status = Some(format!("Reloaded query: {} rows", rows.len()));
+                                } else {
+                                    // Create new tab
+                                    let source = TabSource::Query {
+                                        sql: query.clone(),
+                                    };
+                                    tab_to_add = Some(("Query Result".to_string(), Some(data), source));
+                                    new_status = Some(format!("Query returned {} rows", rows.len()));
+                                    close_query_panel = true;
+                                }
                             }
                             Err(e) => {
                                 new_status = Some(format!("Query error: {}", e));
@@ -348,8 +467,8 @@ impl eframe::App for DbClientApp {
         if should_clear_operation {
             self.pending_operation = None;
         }
-        if let Some((title, data)) = tab_to_add {
-            self.add_tab(title, data);
+        if let Some((title, data, source)) = tab_to_add {
+            self.add_tab(title, data, source);
         }
         if let Some(schemas) = new_schemas {
             self.schemas = schemas;
@@ -429,7 +548,7 @@ impl eframe::App for DbClientApp {
                     ui.horizontal(|ui| {
                         if ui.button("Execute").clicked() ||
                            (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command)) {
-                            self.execute_query();
+                            self.execute_query(None);
                         }
                         if ui.button("Clear").clicked() {
                             self.query_input.clear();
@@ -644,18 +763,19 @@ impl eframe::App for DbClientApp {
             } else {
                 self.expanded_schemas.insert(schema_name);
             }
+            self.save_state();
         }
 
         // Handle table click
         if let Some((schema, table)) = table_clicked {
             self.selected_table = Some((schema.clone(), table.clone()));
-            self.load_table_data(schema, table);
+            self.load_table_data(schema, table, None);
         }
 
         // Handle table right-click (View Data)
         if let Some((schema, table)) = table_right_clicked {
             self.selected_table = Some((schema.clone(), table.clone()));
-            self.load_table_data(schema, table);
+            self.load_table_data(schema, table, None);
         }
 
         // Main content area - Tabs and data grid
@@ -684,6 +804,7 @@ impl eframe::App for DbClientApp {
 
                         if let Some(i) = tab_to_activate {
                             self.active_tab = i;
+                            self.save_state();
                         }
                         if let Some(i) = tab_to_close {
                             self.close_tab(i);
@@ -696,6 +817,7 @@ impl eframe::App for DbClientApp {
                     let column_to_sort = Cell::new(None);
                     let mut page_size_changed = None;
                     let mut page_changed = None;
+                    let mut reload_requested = false;
 
                     if let Some(tab) = self.tabs.get(self.active_tab) {
                         if let Some(data) = &tab.data {
@@ -712,6 +834,12 @@ impl eframe::App for DbClientApp {
 
                             // Pagination controls
                             ui.horizontal(|ui| {
+                                if ui.button("🔄 Reload").clicked() {
+                                    reload_requested = true;
+                                }
+
+                                ui.separator();
+
                                 ui.label("Rows per page:");
 
                                 for size in [50, 100, 500, 1000, 5000] {
@@ -774,17 +902,32 @@ impl eframe::App for DbClientApp {
                                             for (col_index, column) in data.columns.iter().enumerate() {
                                                 header.col(|ui| {
                                                     ui.vertical(|ui| {
-                                                        // Create clickable header with sort indicator
-                                                        let sort_indicator = if sort_column == Some(col_index) {
-                                                            if sort_ascending { " ▲" } else { " ▼" }
-                                                        } else {
-                                                            ""
-                                                        };
+                                                        ui.horizontal(|ui| {
+                                                            // Add key indicator
+                                                            if column.is_primary_key {
+                                                                ui.label(egui::RichText::new("🔑").color(egui::Color32::from_rgb(255, 215, 0)));
+                                                            } else if column.is_foreign_key {
+                                                                ui.label(egui::RichText::new("🔗").color(egui::Color32::from_rgb(150, 150, 255)));
+                                                            }
 
-                                                        let header_text = format!("{}{}", column, sort_indicator);
-                                                        if ui.button(egui::RichText::new(header_text).strong()).clicked() {
-                                                            column_to_sort.set(Some(col_index));
-                                                        }
+                                                            // Create clickable header with sort indicator
+                                                            let sort_indicator = if sort_column == Some(col_index) {
+                                                                if sort_ascending { " ▲" } else { " ▼" }
+                                                            } else {
+                                                                ""
+                                                            };
+
+                                                            // Column name (strong)
+                                                            let header_text = format!("{}{}", column.name, sort_indicator);
+                                                            if ui.button(egui::RichText::new(header_text).strong()).clicked() {
+                                                                column_to_sort.set(Some(col_index));
+                                                            }
+                                                        });
+
+                                                        // Data type (gray, smaller text)
+                                                        ui.label(egui::RichText::new(&column.data_type)
+                                                            .size(9.0)
+                                                            .color(egui::Color32::from_rgb(150, 150, 150)));
 
                                                         ui.add_space(2.0);
                                                         ui.separator();
@@ -900,6 +1043,7 @@ impl eframe::App for DbClientApp {
                         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                             tab.page_size = new_size;
                             tab.current_page = 0; // Reset to first page when changing page size
+                            self.save_state();
                         }
                     }
 
@@ -907,7 +1051,13 @@ impl eframe::App for DbClientApp {
                     if let Some(new_page) = page_changed {
                         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                             tab.current_page = new_page;
+                            self.save_state();
                         }
+                    }
+
+                    // Handle reload request
+                    if reload_requested {
+                        self.reload_current_tab();
                     }
         });
 

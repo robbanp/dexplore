@@ -1,6 +1,7 @@
 use anyhow::Result;
 use tokio_postgres::{Client, NoTls, Row};
 use chrono::{NaiveDateTime, DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 pub struct Database {
     client: Client,
@@ -10,6 +11,14 @@ pub struct Database {
 pub struct SchemaInfo {
     pub name: String,
     pub tables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnInfo {
+    pub name: String,
+    pub data_type: String,
+    pub is_primary_key: bool,
+    pub is_foreign_key: bool,
 }
 
 // Helper function to convert PostgreSQL values to strings
@@ -188,7 +197,7 @@ impl Database {
         self.list_all_tables_grouped().await
     }
 
-    pub async fn query_table(&self, table_name: &str, limit: i64) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+    pub async fn query_table(&self, table_name: &str, limit: i64) -> Result<(Vec<ColumnInfo>, Vec<Vec<String>>)> {
         // Parse schema and table name
         let (schema, table) = if table_name.contains('.') {
             let parts: Vec<&str> = table_name.split('.').collect();
@@ -197,15 +206,76 @@ impl Database {
             ("public", table_name)
         };
 
-        // Get column names
+        // Get column metadata including data types
         let columns_query = format!(
-            "SELECT column_name FROM information_schema.columns
-             WHERE table_schema = '{}' AND table_name = '{}'
-             ORDER BY ordinal_position",
+            "SELECT
+                c.column_name,
+                c.data_type,
+                c.udt_name,
+                CASE
+                    WHEN c.character_maximum_length IS NOT NULL THEN c.data_type || '(' || c.character_maximum_length || ')'
+                    WHEN c.numeric_precision IS NOT NULL AND c.numeric_scale IS NOT NULL THEN c.data_type || '(' || c.numeric_precision || ',' || c.numeric_scale || ')'
+                    WHEN c.datetime_precision IS NOT NULL AND c.datetime_precision != 6 THEN c.udt_name || '(' || c.datetime_precision || ')'
+                    WHEN c.datetime_precision IS NOT NULL AND c.datetime_precision = 6 THEN c.udt_name || '(6)'
+                    ELSE c.udt_name
+                END as full_data_type
+             FROM information_schema.columns c
+             WHERE c.table_schema = '{}' AND c.table_name = '{}'
+             ORDER BY c.ordinal_position",
             schema, table
         );
         let column_rows = self.client.query(&columns_query, &[]).await?;
-        let columns: Vec<String> = column_rows.iter().map(|row| row.get(0)).collect();
+
+        // Get primary key columns
+        let pk_query = format!(
+            "SELECT kcu.column_name
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu
+                 ON tc.constraint_name = kcu.constraint_name
+                 AND tc.table_schema = kcu.table_schema
+             WHERE tc.constraint_type = 'PRIMARY KEY'
+                 AND tc.table_schema = '{}'
+                 AND tc.table_name = '{}'",
+            schema, table
+        );
+        let pk_rows = self.client.query(&pk_query, &[]).await?;
+        let pk_columns: std::collections::HashSet<String> = pk_rows
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect();
+
+        // Get foreign key columns
+        let fk_query = format!(
+            "SELECT kcu.column_name
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu
+                 ON tc.constraint_name = kcu.constraint_name
+                 AND tc.table_schema = kcu.table_schema
+             WHERE tc.constraint_type = 'FOREIGN KEY'
+                 AND tc.table_schema = '{}'
+                 AND tc.table_name = '{}'",
+            schema, table
+        );
+        let fk_rows = self.client.query(&fk_query, &[]).await?;
+        let fk_columns: std::collections::HashSet<String> = fk_rows
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect();
+
+        // Build column info
+        let columns: Vec<ColumnInfo> = column_rows
+            .iter()
+            .map(|row| {
+                let name: String = row.get(0);
+                let full_data_type: String = row.get(3);
+                ColumnInfo {
+                    is_primary_key: pk_columns.contains(&name),
+                    is_foreign_key: fk_columns.contains(&name),
+                    name,
+                    data_type: full_data_type,
+                }
+            })
+            .collect();
 
         // Get data - use proper schema qualification
         let data_query = format!("SELECT * FROM {}.{} LIMIT {}", schema, table, limit);
@@ -223,17 +293,23 @@ impl Database {
         Ok((columns, data))
     }
 
-    pub async fn execute_query(&self, query: &str) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+    pub async fn execute_query(&self, query: &str) -> Result<(Vec<ColumnInfo>, Vec<Vec<String>>)> {
         let rows = self.client.query(query, &[]).await?;
 
         if rows.is_empty() {
             return Ok((vec![], vec![]));
         }
 
-        let columns: Vec<String> = rows[0]
+        // For generic queries, we only have basic column info
+        let columns: Vec<ColumnInfo> = rows[0]
             .columns()
             .iter()
-            .map(|col| col.name().to_string())
+            .map(|col| ColumnInfo {
+                name: col.name().to_string(),
+                data_type: format!("{:?}", col.type_()),
+                is_primary_key: false,
+                is_foreign_key: false,
+            })
             .collect();
 
         let data: Vec<Vec<String>> = rows
