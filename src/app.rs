@@ -1,11 +1,12 @@
 use crate::config::{Config, DatabaseConnection};
 use crate::db::{AsyncOperation, Database, SchemaInfo};
 use crate::models::{AppState, Tab, TabSource, TableData};
+use crate::ui::components::*;
+use crate::ui::setup_styles;
 use eframe::egui;
 use poll_promise::Promise;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::cell::Cell;
 
 pub struct DbClientApp {
     // Connection state
@@ -21,7 +22,6 @@ pub struct DbClientApp {
     pub schemas: Vec<SchemaInfo>,
     pub expanded_schemas: HashSet<String>,
     pub selected_table: Option<(String, String)>, // (schema, table)
-    pub selected_row: Option<usize>,
 
     // Tabs
     pub tabs: Vec<Tab>,
@@ -42,6 +42,17 @@ pub struct DbClientApp {
     pub show_settings: bool,
     pub edit_connection: Option<DatabaseConnection>,
     pub edit_connection_index: Option<usize>,
+
+    // UI Components
+    menu_bar: MenuBar,
+    status_bar: StatusBar,
+    query_panel: QueryPanel,
+    settings_dialog: SettingsDialog,
+    connection_editor: ConnectionEditor,
+    database_tree: DatabaseTree,
+    tab_bar: TabBar,
+    pagination: PaginationControls,
+    data_grid: DataGrid,
 }
 
 impl DbClientApp {
@@ -56,29 +67,8 @@ impl DbClientApp {
     }
 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Set default text style to use monospace for better data display
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.text_styles.insert(
-            egui::TextStyle::Body,
-            egui::FontId::new(11.0, egui::FontFamily::Monospace)
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Button,
-            egui::FontId::new(11.0, egui::FontFamily::Monospace)
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Heading,
-            egui::FontId::new(14.0, egui::FontFamily::Monospace)
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Small,
-            egui::FontId::new(9.0, egui::FontFamily::Monospace)
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Monospace,
-            egui::FontId::new(11.0, egui::FontFamily::Monospace)
-        );
-        cc.egui_ctx.set_style(style);
+        // Setup monospace styles for better data display
+        setup_styles(&cc.egui_ctx);
 
         let config = Config::load().unwrap_or_else(|_| Config::new());
 
@@ -112,7 +102,6 @@ impl DbClientApp {
             schemas: Vec::new(),
             expanded_schemas,
             selected_table: None,
-            selected_row: None,
             tabs,
             active_tab,
             next_tab_id,
@@ -123,6 +112,15 @@ impl DbClientApp {
             show_settings: false,
             edit_connection: None,
             edit_connection_index: None,
+            menu_bar: MenuBar::new(),
+            status_bar: StatusBar::new(),
+            query_panel: QueryPanel::new(),
+            settings_dialog: SettingsDialog::new(),
+            connection_editor: ConnectionEditor::new(),
+            database_tree: DatabaseTree::new(),
+            tab_bar: TabBar::new(),
+            pagination: PaginationControls::new(),
+            data_grid: DataGrid::new(),
         };
 
         // Auto-connect on startup
@@ -136,7 +134,6 @@ impl DbClientApp {
         self.connection_status = "Connecting...".to_string();
         let runtime = Arc::clone(&self.runtime);
 
-        // We'll handle the result in the update loop
         self.pending_operation = Some(AsyncOperation::LoadStructure(
             Promise::spawn_thread("load_structure", move || {
                 runtime.block_on(async move {
@@ -198,7 +195,7 @@ impl DbClientApp {
             sort_column: None,
             sort_ascending: true,
             current_page: 0,
-            page_size: 100, // Default to 100 rows per page
+            page_size: 100,
             source,
         };
         self.next_tab_id += 1;
@@ -266,12 +263,218 @@ impl DbClientApp {
 
 impl eframe::App for DbClientApp {
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        // Save state when app closes
         self.save_state();
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Handle pending async operations
+        self.handle_async_operations();
+
+        // Top menu bar
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            if let Some(event) = self.menu_bar.show(ui, &self.connection_status) {
+                match event {
+                    MenuBarEvent::ShowSettings => self.show_settings = true,
+                    MenuBarEvent::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                    MenuBarEvent::ToggleQueryPanel => self.show_query_panel = !self.show_query_panel,
+                    MenuBarEvent::Refresh => self.connect_to_database(),
+                }
+            }
+        });
+
+        // Status bar
+        let row_count = self.tabs.get(self.active_tab)
+            .and_then(|tab| tab.data.as_ref())
+            .map(|data| data.rows.len());
+
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            self.status_bar.show(ui, &self.status_message, row_count);
+        });
+
+        // Query panel (if shown)
+        if self.show_query_panel {
+            egui::TopBottomPanel::top("query_panel").show(ctx, |ui| {
+                if let Some(event) = self.query_panel.show(ui, &mut self.query_input) {
+                    match event {
+                        QueryPanelEvent::Execute => self.execute_query(None),
+                        QueryPanelEvent::Clear => self.query_input.clear(),
+                        QueryPanelEvent::Close => self.show_query_panel = false,
+                    }
+                }
+            });
+        }
+
+        // Settings dialog
+        if self.show_settings {
+            if let Some(event) = self.settings_dialog.show(ctx, &self.config) {
+                match event {
+                    SettingsDialogEvent::Connect(idx) => {
+                        if let Some(conn) = self.config.get_connection(idx) {
+                            self.connection_string = conn.to_connection_string();
+                            self.config.last_connection_index = Some(idx);
+                            let _ = self.config.save();
+                            self.connect_to_database();
+                            self.show_settings = false;
+                        }
+                    }
+                    SettingsDialogEvent::Edit(idx) => {
+                        if let Some(conn) = self.config.get_connection(idx) {
+                            self.edit_connection = Some(conn.clone());
+                            self.edit_connection_index = Some(idx);
+                        }
+                    }
+                    SettingsDialogEvent::Delete(idx) => {
+                        self.config.delete_connection(idx);
+                        let _ = self.config.save();
+                    }
+                    SettingsDialogEvent::NewConnection => {
+                        self.edit_connection = Some(DatabaseConnection::new());
+                        self.edit_connection_index = None;
+                    }
+                    SettingsDialogEvent::Close => self.show_settings = false,
+                }
+            }
+        }
+
+        // Connection editor dialog
+        if let Some(ref mut conn) = self.edit_connection {
+            if let Some(event) = self.connection_editor.show(ctx, conn) {
+                match event {
+                    ConnectionEditorEvent::Save => {
+                        if let Some(idx) = self.edit_connection_index {
+                            self.config.update_connection(idx, conn.clone());
+                        } else {
+                            self.config.add_connection(conn.clone());
+                        }
+                        let _ = self.config.save();
+                        self.edit_connection = None;
+                        self.edit_connection_index = None;
+                    }
+                    ConnectionEditorEvent::Cancel => {
+                        self.edit_connection = None;
+                        self.edit_connection_index = None;
+                    }
+                }
+            }
+        }
+
+        // Left sidebar - Database tree
+        egui::SidePanel::left("database_structure_panel")
+            .resizable(true)
+            .default_width(300.0)
+            .min_width(200.0)
+            .max_width(600.0)
+            .show(ctx, |ui| {
+                ui.heading("Database Structure");
+                ui.separator();
+
+                if let Some(event) = self.database_tree.show(ui, &self.schemas, &self.expanded_schemas, &self.selected_table) {
+                    match event {
+                        DatabaseTreeEvent::TableClicked(schema, table) => {
+                            self.selected_table = Some((schema.clone(), table.clone()));
+                            self.load_table_data(schema, table, None);
+                        }
+                        DatabaseTreeEvent::TableRightClicked(schema, table) => {
+                            self.selected_table = Some((schema.clone(), table.clone()));
+                            self.load_table_data(schema, table, None);
+                        }
+                        DatabaseTreeEvent::SchemaToggled(schema_name) => {
+                            if self.expanded_schemas.contains(&schema_name) {
+                                self.expanded_schemas.remove(&schema_name);
+                            } else {
+                                self.expanded_schemas.insert(schema_name);
+                            }
+                            self.save_state();
+                        }
+                    }
+                }
+            });
+
+        // Main content area - Tabs and data grid
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // Tab bar
+            if let Some(event) = self.tab_bar.show(ui, &self.tabs, self.active_tab) {
+                match event {
+                    TabBarEvent::TabActivated(i) => {
+                        self.active_tab = i;
+                        self.save_state();
+                    }
+                    TabBarEvent::TabClosed(i) => {
+                        self.close_tab(i);
+                    }
+                }
+            }
+
+            // Data grid with pagination
+            // Extract values to avoid borrow checker issues
+            let (has_data, is_loading, sort_column, sort_ascending, current_page, page_size, total_rows) =
+                if let Some(tab) = self.tabs.get(self.active_tab) {
+                    if let Some(data) = &tab.data {
+                        (true, false, tab.sort_column, tab.sort_ascending, tab.current_page, tab.page_size, Some(data.rows.len()))
+                    } else {
+                        (false, tab.is_loading, None, true, 0, 100, None)
+                    }
+                } else {
+                    (false, false, None, true, 0, 100, None)
+                };
+
+            if has_data {
+                // Pagination controls
+                if let Some(event) = self.pagination.show(ui, current_page, page_size, total_rows.unwrap()) {
+                    match event {
+                        PaginationEvent::Reload => self.reload_current_tab(),
+                        PaginationEvent::PageSizeChanged(size) => {
+                            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                                tab.page_size = size;
+                                tab.current_page = 0;
+                                self.save_state();
+                            }
+                        }
+                        PaginationEvent::PageChanged(page) => {
+                            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                                tab.current_page = page;
+                                self.save_state();
+                            }
+                        }
+                    }
+                }
+
+                // Data grid
+                if let Some(tab) = self.tabs.get(self.active_tab) {
+                    if let Some(data) = &tab.data {
+                        if let Some(event) = self.data_grid.show(ui, data, sort_column, sort_ascending, current_page, page_size) {
+                            match event {
+                                DataGridEvent::ColumnSorted(col_index) => {
+                                    self.sort_tab_data(self.active_tab, col_index);
+                                }
+                                DataGridEvent::RowSelected(_) => {
+                                    // Row selection handled by data_grid internally
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if is_loading {
+                ui.centered_and_justified(|ui| {
+                    ui.spinner();
+                    ui.label("Loading...");
+                });
+            } else {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Select a table to view data");
+                });
+            }
+        });
+
+        // Request repaint if we're waiting for async operations
+        if self.pending_operation.is_some() {
+            ctx.request_repaint();
+        }
+    }
+}
+
+impl DbClientApp {
+    fn handle_async_operations(&mut self) {
         let mut should_clear_operation = false;
         let mut tab_to_add: Option<(String, Option<TableData>, TabSource)> = None;
         let mut new_schemas: Option<Vec<SchemaInfo>> = None;
@@ -290,8 +493,6 @@ impl eframe::App for DbClientApp {
                                 new_schemas = Some(schemas.clone());
                                 new_connection_status = Some(format!("Connected - {} schemas, {} tables", schemas.len(), total_tables));
                                 new_status = Some(format!("Loaded {} schemas with {} tables", schemas.len(), total_tables));
-
-                                // Store the database connection for future queries
                                 new_database = Some(Arc::clone(db));
                             }
                             Err(e) => {
@@ -313,13 +514,11 @@ impl eframe::App for DbClientApp {
                                 };
 
                                 if let Some(idx) = tab_index {
-                                    // Update existing tab
                                     if let Some(tab) = self.tabs.get_mut(*idx) {
                                         tab.data = Some(data);
                                     }
                                     new_status = Some(format!("Reloaded {} rows from {}.{}", rows.len(), schema, table_name));
                                 } else {
-                                    // Create new tab
                                     let source = TabSource::Table {
                                         schema: schema.clone(),
                                         table: table_name.clone(),
@@ -346,13 +545,11 @@ impl eframe::App for DbClientApp {
                                 };
 
                                 if let Some(idx) = tab_index {
-                                    // Update existing tab
                                     if let Some(tab) = self.tabs.get_mut(*idx) {
                                         tab.data = Some(data);
                                     }
                                     new_status = Some(format!("Reloaded query: {} rows", rows.len()));
                                 } else {
-                                    // Create new tab
                                     let source = TabSource::Query {
                                         sql: query.clone(),
                                     };
@@ -392,586 +589,6 @@ impl eframe::App for DbClientApp {
         }
         if close_query_panel {
             self.show_query_panel = false;
-        }
-
-        // Top menu bar
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Settings...").clicked() {
-                        self.show_settings = true;
-                        ui.close_menu();
-                    }
-                    if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-
-                ui.menu_button("View", |ui| {
-                    if ui.button("Show Query Panel").clicked() {
-                        self.show_query_panel = !self.show_query_panel;
-                    }
-                });
-
-                ui.separator();
-
-                if ui.button("🔄 Refresh").clicked() {
-                    self.connect_to_database();
-                }
-
-                if ui.button("📝 Query").clicked() {
-                    self.show_query_panel = !self.show_query_panel;
-                }
-
-                ui.separator();
-                ui.label(&self.connection_status);
-            });
-        });
-
-        // Status bar
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(&self.status_message);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(tab) = self.tabs.get(self.active_tab) {
-                        if let Some(data) = &tab.data {
-                            ui.label(format!("{} rows", data.rows.len()));
-                        }
-                    }
-                });
-            });
-        });
-
-        // Query panel (if shown)
-        if self.show_query_panel {
-            egui::TopBottomPanel::top("query_panel").show(ctx, |ui| {
-                ui.vertical(|ui| {
-                    ui.label("SQL Query:");
-                    let response = ui.add(
-                        egui::TextEdit::multiline(&mut self.query_input)
-                            .desired_rows(3)
-                            .desired_width(f32::INFINITY)
-                    );
-
-                    ui.horizontal(|ui| {
-                        if ui.button("Execute").clicked() ||
-                           (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command)) {
-                            self.execute_query(None);
-                        }
-                        if ui.button("Clear").clicked() {
-                            self.query_input.clear();
-                        }
-                        if ui.button("Close").clicked() {
-                            self.show_query_panel = false;
-                        }
-                    });
-                });
-            });
-        }
-
-        // Settings dialog
-        if self.show_settings {
-            egui::Window::new("Settings")
-                .default_width(600.0)
-                .show(ctx, |ui| {
-                    ui.heading("Database Connections");
-                    ui.separator();
-
-                    egui::ScrollArea::vertical()
-                        .max_height(300.0)
-                        .show(ui, |ui| {
-                            let mut connection_to_delete: Option<usize> = None;
-                            let mut connection_to_edit: Option<usize> = None;
-                            let mut connection_to_connect: Option<usize> = None;
-
-                            for (idx, conn) in self.config.connections.iter().enumerate() {
-                                ui.horizontal(|ui| {
-                                    ui.label(&conn.name);
-                                    ui.label(format!("{}@{}/{}", conn.user, conn.host, conn.database));
-
-                                    if ui.button("Connect").clicked() {
-                                        connection_to_connect = Some(idx);
-                                    }
-                                    if ui.button("Edit").clicked() {
-                                        connection_to_edit = Some(idx);
-                                    }
-                                    if ui.button("Delete").clicked() {
-                                        connection_to_delete = Some(idx);
-                                    }
-                                });
-                                ui.separator();
-                            }
-
-                            if let Some(idx) = connection_to_connect {
-                                if let Some(conn) = self.config.get_connection(idx) {
-                                    self.connection_string = conn.to_connection_string();
-                                    self.config.last_connection_index = Some(idx);
-                                    let _ = self.config.save();
-                                    self.connect_to_database();
-                                    self.show_settings = false;
-                                }
-                            }
-
-                            if let Some(idx) = connection_to_edit {
-                                if let Some(conn) = self.config.get_connection(idx) {
-                                    self.edit_connection = Some(conn.clone());
-                                    self.edit_connection_index = Some(idx);
-                                }
-                            }
-
-                            if let Some(idx) = connection_to_delete {
-                                self.config.delete_connection(idx);
-                                let _ = self.config.save();
-                            }
-                        });
-
-                    ui.separator();
-
-                    if ui.button("+ New Connection").clicked() {
-                        self.edit_connection = Some(DatabaseConnection::new());
-                        self.edit_connection_index = None;
-                    }
-
-                    ui.separator();
-
-                    if ui.button("Close").clicked() {
-                        self.show_settings = false;
-                    }
-                });
-        }
-
-        // Connection edit dialog
-        if let Some(ref mut conn) = self.edit_connection {
-            let mut save_connection = false;
-            let mut cancel_edit = false;
-
-            egui::Window::new("Connection Details")
-                .default_width(400.0)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Name:");
-                        ui.text_edit_singleline(&mut conn.name);
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Host:");
-                        ui.text_edit_singleline(&mut conn.host);
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Port:");
-                        ui.add(egui::DragValue::new(&mut conn.port).clamp_range(1..=65535));
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("User:");
-                        ui.text_edit_singleline(&mut conn.user);
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Password:");
-                        ui.add(egui::TextEdit::singleline(&mut conn.password).password(true));
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Database:");
-                        ui.text_edit_singleline(&mut conn.database);
-                    });
-
-                    ui.separator();
-
-                    ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
-                            save_connection = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            cancel_edit = true;
-                        }
-                    });
-                });
-
-            if save_connection {
-                if let Some(idx) = self.edit_connection_index {
-                    // Update existing
-                    self.config.update_connection(idx, conn.clone());
-                } else {
-                    // Add new
-                    self.config.add_connection(conn.clone());
-                }
-                let _ = self.config.save();
-                self.edit_connection = None;
-                self.edit_connection_index = None;
-            }
-
-            if cancel_edit {
-                self.edit_connection = None;
-                self.edit_connection_index = None;
-            }
-        }
-
-        // Left sidebar - Schema/Tables tree
-        let mut table_clicked: Option<(String, String)> = None;
-        let mut table_right_clicked: Option<(String, String)> = None;
-        let mut schema_toggled: Option<String> = None;
-
-        egui::SidePanel::left("database_structure_panel")
-            .resizable(true)
-            .default_width(300.0)
-            .min_width(200.0)
-            .max_width(600.0)
-            .show(ctx, |ui| {
-                ui.heading("Database Structure");
-                ui.separator();
-
-                egui::ScrollArea::vertical()
-                    .id_source("tables_sidebar")
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        for schema in &self.schemas.clone() {
-                            let is_expanded = self.expanded_schemas.contains(&schema.name);
-
-                            // Schema row with expand/collapse arrow
-                            ui.horizontal(|ui| {
-                                let arrow = if is_expanded { "▼" } else { "▶" };
-                                if ui.button(arrow).clicked() {
-                                    schema_toggled = Some(schema.name.clone());
-                                }
-                                ui.label(egui::RichText::new(&schema.name).strong());
-                                ui.label(format!("({})", schema.tables.len()));
-                            });
-
-                            // Show tables if expanded
-                            if is_expanded {
-                                ui.indent(&schema.name, |ui| {
-                                    for table in &schema.tables {
-                                        let is_selected = self.selected_table.as_ref() == Some(&(schema.name.clone(), table.clone()));
-                                        let response = ui.selectable_label(is_selected, format!("📊 {}", table));
-
-                                        if response.clicked() {
-                                            table_clicked = Some((schema.name.clone(), table.clone()));
-                                        }
-
-                                        response.context_menu(|ui| {
-                                            if ui.button("View Data").clicked() {
-                                                table_right_clicked = Some((schema.name.clone(), table.clone()));
-                                                ui.close_menu();
-                                            }
-                                        });
-                                    }
-                                });
-                            }
-                        }
-                    });
-            });
-
-        // Handle schema toggle
-        if let Some(schema_name) = schema_toggled {
-            if self.expanded_schemas.contains(&schema_name) {
-                self.expanded_schemas.remove(&schema_name);
-            } else {
-                self.expanded_schemas.insert(schema_name);
-            }
-            self.save_state();
-        }
-
-        // Handle table click
-        if let Some((schema, table)) = table_clicked {
-            self.selected_table = Some((schema.clone(), table.clone()));
-            self.load_table_data(schema, table, None);
-        }
-
-        // Handle table right-click (View Data)
-        if let Some((schema, table)) = table_right_clicked {
-            self.selected_table = Some((schema.clone(), table.clone()));
-            self.load_table_data(schema, table, None);
-        }
-
-        // Main content area - Tabs and data grid
-        egui::CentralPanel::default().show(ctx, |ui| {
-                    // Tab bar
-                    if !self.tabs.is_empty() {
-                        let mut tab_to_activate: Option<usize> = None;
-                        let mut tab_to_close: Option<usize> = None;
-
-                        ui.horizontal(|ui| {
-                            for (i, tab) in self.tabs.iter().enumerate() {
-                                let is_active = i == self.active_tab;
-                                let tab_label = egui::RichText::new(&tab.title).strong();
-
-                                if ui.selectable_label(is_active, tab_label).clicked() {
-                                    tab_to_activate = Some(i);
-                                }
-
-                                if ui.small_button("✖").clicked() {
-                                    tab_to_close = Some(i);
-                                }
-
-                                ui.separator();
-                            }
-                        });
-
-                        if let Some(i) = tab_to_activate {
-                            self.active_tab = i;
-                            self.save_state();
-                        }
-                        if let Some(i) = tab_to_close {
-                            self.close_tab(i);
-                        }
-
-                        ui.separator();
-                    }
-
-                    // Data grid
-                    let column_to_sort = Cell::new(None);
-                    let mut page_size_changed = None;
-                    let mut page_changed = None;
-                    let mut reload_requested = false;
-
-                    if let Some(tab) = self.tabs.get(self.active_tab) {
-                        if let Some(data) = &tab.data {
-                            let sort_column = tab.sort_column;
-                            let sort_ascending = tab.sort_ascending;
-                            let current_page = tab.current_page;
-                            let page_size = tab.page_size;
-
-                            // Calculate pagination
-                            let total_rows = data.rows.len();
-                            let total_pages = total_rows.div_ceil(page_size);
-                            let start_row = current_page * page_size;
-                            let end_row = (start_row + page_size).min(total_rows);
-
-                            // Pagination controls
-                            ui.horizontal(|ui| {
-                                if ui.button("🔄 Reload").clicked() {
-                                    reload_requested = true;
-                                }
-
-                                ui.separator();
-
-                                ui.label("Rows per page:");
-
-                                for size in [50, 100, 500, 1000, 5000] {
-                                    let is_selected = page_size == size;
-                                    if ui.selectable_label(is_selected, format!("{}", size)).clicked() {
-                                        page_size_changed = Some(size);
-                                    }
-                                }
-
-                                ui.separator();
-
-                                if ui.button("◀ Previous").clicked() && current_page > 0 {
-                                    page_changed = Some(current_page - 1);
-                                }
-
-                                ui.label(format!("Page {} of {} ({}-{} of {} rows)",
-                                    current_page + 1,
-                                    total_pages.max(1),
-                                    start_row + 1,
-                                    end_row,
-                                    total_rows
-                                ));
-
-                                if ui.button("Next ▶").clicked() && current_page + 1 < total_pages {
-                                    page_changed = Some(current_page + 1);
-                                }
-                            });
-
-                            ui.separator();
-
-                            let available_height = ui.available_height();
-                            egui::ScrollArea::both()
-                                .id_source("data_grid")
-                                .max_height(available_height)
-                                .auto_shrink([false; 2])
-                                .show(ui, |ui| {
-                                    use egui_extras::{Column, TableBuilder};
-
-                                    let table = TableBuilder::new(ui)
-                                        .striped(true)
-                                        .resizable(true)
-                                        .vscroll(true)
-                                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                                        .column(Column::initial(50.0).at_least(40.0).resizable(false)) // Line number column
-                                        .columns(Column::initial(120.0).at_least(80.0).resizable(true).clip(true), data.columns.len())
-                                        .min_scrolled_height(available_height);
-
-                                    table
-                                        .header(22.0, |mut header| {
-                                            // Line number header
-                                            header.col(|ui| {
-                                                ui.vertical(|ui| {
-                                                    ui.strong("#");
-                                                    ui.add_space(2.0);
-                                                    ui.separator();
-                                                });
-                                            });
-
-                                            // Data column headers
-                                            for (col_index, column) in data.columns.iter().enumerate() {
-                                                header.col(|ui| {
-                                                    ui.vertical(|ui| {
-                                                        ui.horizontal(|ui| {
-                                                            // Add key indicator
-                                                            if column.is_primary_key {
-                                                                ui.label(egui::RichText::new("🔑").color(egui::Color32::from_rgb(255, 215, 0)));
-                                                            } else if column.is_foreign_key {
-                                                                ui.label(egui::RichText::new("🔗").color(egui::Color32::from_rgb(150, 150, 255)));
-                                                            }
-
-                                                            // Create clickable header with sort indicator
-                                                            let sort_indicator = if sort_column == Some(col_index) {
-                                                                if sort_ascending { " ▲" } else { " ▼" }
-                                                            } else {
-                                                                ""
-                                                            };
-
-                                                            // Column name (strong)
-                                                            let header_text = format!("{}{}", column.name, sort_indicator);
-                                                            if ui.button(egui::RichText::new(header_text).strong()).clicked() {
-                                                                column_to_sort.set(Some(col_index));
-                                                            }
-                                                        });
-
-                                                        // Data type (gray, smaller text)
-                                                        ui.label(egui::RichText::new(&column.data_type)
-                                                            .size(9.0)
-                                                            .color(egui::Color32::from_rgb(150, 150, 150)));
-
-                                                        ui.add_space(2.0);
-                                                        ui.separator();
-                                                    });
-                                                });
-                                            }
-                                        })
-                                        .body(|mut body| {
-                                            // Only show rows for current page
-                                            let page_rows = &data.rows[start_row..end_row];
-                                            for (page_row_index, row) in page_rows.iter().enumerate() {
-                                                let actual_row_index = start_row + page_row_index;
-                                                let is_selected = self.selected_row == Some(actual_row_index);
-
-                                                body.row(18.0, |mut row_ui| {
-                                                    // Line number cell
-                                                    row_ui.col(|ui| {
-                                                        let rect = ui.available_rect_before_wrap();
-
-                                                        // Add background color for selected row
-                                                        if is_selected {
-                                                            ui.painter().rect_filled(
-                                                                rect,
-                                                                0.0,
-                                                                egui::Color32::from_rgb(200, 200, 200)
-                                                            );
-                                                        }
-
-                                                        // Interact with entire cell area for row selection
-                                                        let cell_response = ui.interact(rect, ui.id().with(actual_row_index), egui::Sense::click());
-
-                                                        // Left click anywhere in cell to select row
-                                                        if cell_response.clicked() {
-                                                            if is_selected {
-                                                                self.selected_row = None;
-                                                            } else {
-                                                                self.selected_row = Some(actual_row_index);
-                                                            }
-                                                        }
-
-                                                        // Display line number (1-indexed)
-                                                        ui.label(egui::RichText::new(format!("{}", actual_row_index + 1))
-                                                            .color(egui::Color32::from_rgb(150, 150, 150)));
-                                                    });
-
-                                                    // Data cells
-                                                    for cell in row {
-                                                        row_ui.col(|ui| {
-                                                            // Get the full cell rect
-                                                            let rect = ui.available_rect_before_wrap();
-
-                                                            // Add background color for selected row
-                                                            if is_selected {
-                                                                ui.painter().rect_filled(
-                                                                    rect,
-                                                                    0.0,
-                                                                    egui::Color32::from_rgb(200, 200, 200)
-                                                                );
-                                                            }
-
-                                                            // Interact with entire cell area for row selection
-                                                            let cell_response = ui.interact(rect, ui.id().with(actual_row_index), egui::Sense::click());
-
-                                                            // Left click anywhere in cell to select row
-                                                            if cell_response.clicked() {
-                                                                if is_selected {
-                                                                    self.selected_row = None;
-                                                                } else {
-                                                                    self.selected_row = Some(actual_row_index);
-                                                                }
-                                                            }
-
-                                                            ui.style_mut().wrap = Some(false);
-
-                                                            let label_response = ui.add(
-                                                                egui::Label::new(cell)
-                                                                    .truncate(true)
-                                                                    .selectable(true)
-                                                            );
-
-                                                            // Right click context menu to copy cell value
-                                                            label_response.context_menu(|ui| {
-                                                                if ui.button("Copy Cell Value").clicked() {
-                                                                    ui.output_mut(|o| o.copied_text = cell.clone());
-                                                                    ui.close_menu();
-                                                                }
-                                                            });
-                                                        });
-                                                    }
-                                                });
-                                            }
-                                        });
-                                });
-                        } else if tab.is_loading {
-                            ui.centered_and_justified(|ui| {
-                                ui.spinner();
-                                ui.label("Loading...");
-                            });
-                        }
-                    } else {
-                        ui.centered_and_justified(|ui| {
-                            ui.label("Select a table to view data");
-                        });
-                    }
-
-                    // Handle column sort after the immutable borrow is released
-                    if let Some(col_index) = column_to_sort.get() {
-                        self.sort_tab_data(self.active_tab, col_index);
-                    }
-
-                    // Handle page size changes
-                    if let Some(new_size) = page_size_changed {
-                        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                            tab.page_size = new_size;
-                            tab.current_page = 0; // Reset to first page when changing page size
-                            self.save_state();
-                        }
-                    }
-
-                    // Handle page navigation
-                    if let Some(new_page) = page_changed {
-                        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                            tab.current_page = new_page;
-                            self.save_state();
-                        }
-                    }
-
-                    // Handle reload request
-                    if reload_requested {
-                        self.reload_current_tab();
-                    }
-        });
-
-        // Request repaint if we're waiting for async operations
-        if self.pending_operation.is_some() {
-            ctx.request_repaint();
         }
     }
 }
