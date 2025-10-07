@@ -1,1 +1,28 @@
-/target
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config files (may contain passwords)
+config.json
+state.json
+
+# Env files
+.env
+.env.local
+
+# Debug
+debug/
+*.log

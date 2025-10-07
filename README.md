@@ -1,108 +1,66 @@
-# PostgreSQL Database Client (TUI)
+# db-client
 
-A terminal-based PostgreSQL database client built with Rust, featuring a modern TUI interface similar to GUI database clients.
+Simple PostgreSQL client I threw together in Rust. Uses egui for the GUI.
 
-## Features
+## What it does
 
-- 📊 Browse database tables in a sidebar
-- 🔍 View table data in a grid layout
-- ⌨️ Execute custom SQL queries
-- 🎨 Vim-style keyboard navigation
-- ⚡ Fast and lightweight
+Browse your postgres databases, run queries, view tables. Nothing fancy but gets the job done.
 
-## Setup
+- Tree view of schemas and tables on the left
+- Click a table to open it in a new tab
+- Tabs stay open between sessions (saves to ~/.config/db-client/state.json)
+- Sort columns by clicking headers
+- Reload data with the refresh button
+- Execute custom SQL queries
+- Multiple connection configs
 
-### Prerequisites
+## Building
 
-- Rust (1.70 or later)
-- PostgreSQL database access
-
-### Installation
+You need Rust installed.
 
 ```bash
 cargo build --release
 ```
 
-## Usage
-
-### Setting Database Connection
-
-Set the `DATABASE_URL` environment variable:
-
-```bash
-export DATABASE_URL="host=localhost user=postgres password=yourpassword dbname=yourdb"
-```
-
-Or let it use the default connection string (localhost, user=postgres, password=postgres, dbname=postgres).
-
-### Running the Application
+## Running
 
 ```bash
 cargo run
 ```
 
-Or run the compiled binary:
+Or just run the binary after building:
 
 ```bash
 ./target/release/db-client
 ```
 
-## Keyboard Controls
+## Configuration
 
-### Navigation
+First time you run it, go to File → Settings and add your database connections. It'll remember which schemas you had expanded and what tabs were open.
 
-- `Tab` - Switch between sidebar and data grid
-- `↑/↓` or `k/j` - Navigate up/down in lists
-- `Enter` - Load selected table data
+If you don't set anything up, it tries to connect to localhost with user=postgres, password=postgres, dbname=postgres. You can also set DATABASE_URL env var.
 
-### Query Mode
+Connection configs saved to `~/.config/db-client/config.json`
 
-- `i` - Enter query mode
-- Type your SQL query
-- `Enter` - Execute query
-- `Esc` - Cancel and return to normal mode
+## UI stuff
 
-### General
+- Column headers show data types in smaller gray text
+- 🔑 icon = primary key
+- 🔗 icon = foreign key
+- Click column headers to sort
+- Page through large tables with the pagination controls
+- Right-click tables for context menu
 
-- `q` - Quit application
+## Query panel
 
-## Layout
+Click "Query" button or go to View → Show Query Panel. Type your SQL and hit Execute (or Cmd+Enter). Results open in a new tab.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ SQL Query Input                                          │
-├────────────┬────────────────────────────────────────────┤
-│ Tables     │ Data Grid                                   │
-│            │                                             │
-│ 📊 users   │ id │ name     │ email                      │
-│ 📊 orders  │ 1  │ John Doe │ john@example.com           │
-│ 📊 products│ 2  │ Jane     │ jane@example.com           │
-│            │                                             │
-├────────────┴────────────────────────────────────────────┤
-│ Status                                                   │
-└─────────────────────────────────────────────────────────┘
-```
+## Keys used
 
-## Example Queries
-
-```sql
-SELECT * FROM users WHERE email LIKE '%@example.com';
-SELECT COUNT(*) FROM orders;
-SELECT * FROM products ORDER BY price DESC LIMIT 10;
-```
-
-## Architecture
-
-- `src/db.rs` - Database connection and query execution
-- `src/main.rs` - TUI application and event handling
-
-## Dependencies
-
-- `tokio-postgres` - Async PostgreSQL client
-- `ratatui` - Terminal UI framework
-- `crossterm` - Cross-platform terminal manipulation
-- `anyhow` - Error handling
+- eframe/egui for the GUI
+- tokio-postgres for database stuff
+- serde for saving state
 
 ## License
 
-MIT
+MIT probably? Do whatever you want with it.

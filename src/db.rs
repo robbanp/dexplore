@@ -95,63 +95,6 @@ impl Database {
         Ok(Database { client })
     }
 
-    pub async fn list_databases(&self) -> Result<Vec<String>> {
-        let rows = self
-            .client
-            .query(
-                "SELECT datname FROM pg_database
-                 WHERE datistemplate = false
-                 ORDER BY datname",
-                &[],
-            )
-            .await?;
-
-        Ok(rows.iter().map(|row| row.get(0)).collect())
-    }
-
-    pub async fn list_schemas(&self) -> Result<Vec<String>> {
-        let rows = self
-            .client
-            .query(
-                "SELECT schema_name FROM information_schema.schemata
-                 WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-                 ORDER BY schema_name",
-                &[],
-            )
-            .await?;
-
-        Ok(rows.iter().map(|row| row.get(0)).collect())
-    }
-
-    pub async fn list_tables(&self) -> Result<Vec<String>> {
-        let rows = self
-            .client
-            .query(
-                "SELECT table_name FROM information_schema.tables
-                 WHERE table_schema = 'public'
-                 ORDER BY table_name",
-                &[],
-            )
-            .await?;
-
-        Ok(rows.iter().map(|row| row.get(0)).collect())
-    }
-
-    pub async fn list_tables_in_schema(&self, schema: &str) -> Result<Vec<String>> {
-        let rows = self
-            .client
-            .query(
-                "SELECT table_name FROM information_schema.tables
-                 WHERE table_schema = $1
-                 AND table_type IN ('BASE TABLE', 'VIEW', 'MATERIALIZED VIEW')
-                 ORDER BY table_name",
-                &[&schema],
-            )
-            .await?;
-
-        Ok(rows.iter().map(|row| row.get(0)).collect())
-    }
-
     pub async fn list_all_tables_grouped(&self) -> Result<Vec<SchemaInfo>> {
         // Get all tables grouped by schema in a single query
         let rows = self
