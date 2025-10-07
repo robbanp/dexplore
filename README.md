@@ -39,7 +39,13 @@ Simple PostgreSQL client I threw together in Rust. Uses egui for the GUI.
 - **SQL query panel** - write and execute custom SQL queries
 - **Keyboard shortcut** - Cmd+Enter (Mac) / Ctrl+Enter (Windows/Linux) to execute
 - **Query results in tabs** - results open in new tabs just like tables
+- **Per-tab queries** - each tab has its own query, switch between tabs to work on different queries
+- **Query display** - SQL query is shown above results with copy and edit buttons
 - **Query persistence** - can reload/refresh query results
+- **Save queries** - save frequently used queries with names
+- **Load queries** - quickly load saved queries into the editor
+- **Query library** - manage your saved queries (view, load, delete)
+- **Timestamps** - saved queries include creation timestamps
 
 ### Session Management
 - **State persistence** - remembers:
@@ -87,6 +93,7 @@ You can also set the `DATABASE_URL` environment variable.
 **Config files:**
 - Connection configs: `~/.config/db-client/config.json`
 - Session state: `~/.config/db-client/state.json`
+- Saved queries: `~/.config/db-client/queries.json`
 
 ## Quick Start
 
@@ -98,9 +105,28 @@ You can also set the `DATABASE_URL` environment variable.
 6. Use the search bar above the grid to find data
 7. Use **◀ ▶** arrows to navigate between search matches
 8. Open **View → Show Query Panel** to execute custom SQL
+9. Click **💾 Save** to save frequently used queries
+10. Click **📂 Load** to access your saved queries
 
-## Keyboard Shortcuts
+## Usage Tips
 
+### SQL Query Editor
+- Write SQL queries in the query panel (**View → Show Query Panel**)
+- Execute with **Cmd/Ctrl + Enter** or click **Execute**
+- Each tab has its own query - switch between tabs to work on different queries
+- The executed SQL query is displayed above the results
+- Click **📋 Copy** to copy the query to clipboard
+- Click **✏ Edit** to open it in the query panel
+- Save queries you use often with the **💾 Save** button
+- Load saved queries with the **📂 Load** button
+
+### Search & Navigation
+- Type in the search box to highlight all matches
+- Use **◀ ▶** arrows to jump between matches
+- Match counter shows your position (e.g., "Match 3 of 12")
+- View automatically scrolls to show the current match
+
+### Keyboard Shortcuts
 - **Cmd/Ctrl + Enter** - Execute query in query panel
 - Click column headers to sort
 - Right-click cells to copy values

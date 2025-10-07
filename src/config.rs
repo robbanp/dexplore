@@ -13,6 +13,14 @@ pub struct DatabaseConnection {
     pub database: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedQuery {
+    pub name: String,
+    pub sql: String,
+    #[serde(default)]
+    pub created_at: String,
+}
+
 impl DatabaseConnection {
     pub fn new() -> Self {
         Self {
@@ -110,5 +118,68 @@ impl Config {
     pub fn get_last_connection(&self) -> Option<&DatabaseConnection> {
         self.last_connection_index
             .and_then(|idx| self.connections.get(idx))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SavedQueries {
+    pub queries: Vec<SavedQuery>,
+}
+
+impl SavedQueries {
+    pub fn new() -> Self {
+        Self {
+            queries: vec![],
+        }
+    }
+
+    pub fn load() -> Result<Self> {
+        let queries_path = Self::get_queries_path()?;
+
+        if queries_path.exists() {
+            let content = fs::read_to_string(&queries_path)?;
+            let queries: SavedQueries = serde_json::from_str(&content)?;
+            Ok(queries)
+        } else {
+            Ok(Self::new())
+        }
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let queries_path = Self::get_queries_path()?;
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = queries_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let content = serde_json::to_string_pretty(self)?;
+        fs::write(&queries_path, content)?;
+        Ok(())
+    }
+
+    fn get_queries_path() -> Result<PathBuf> {
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+        Ok(home.join(".config").join("db-client").join("queries.json"))
+    }
+
+    pub fn add_query(&mut self, name: String, sql: String) {
+        let created_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        self.queries.push(SavedQuery {
+            name,
+            sql,
+            created_at,
+        });
+    }
+
+    pub fn delete_query(&mut self, index: usize) {
+        if index < self.queries.len() {
+            self.queries.remove(index);
+        }
+    }
+
+    pub fn get_query(&self, index: usize) -> Option<&SavedQuery> {
+        self.queries.get(index)
     }
 }

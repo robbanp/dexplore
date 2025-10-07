@@ -29,6 +29,8 @@ pub struct Tab {
     // Current search match index for navigation
     #[serde(skip)]
     pub search_match_index: usize,
+    // Query input for this tab (editable SQL)
+    pub query_input: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

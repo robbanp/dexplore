@@ -1,6 +1,7 @@
 mod menu_bar;
 mod status_bar;
 mod query_panel;
+mod saved_queries_dialog;
 mod settings_dialog;
 mod connection_editor;
 mod database_tree;
@@ -12,6 +13,7 @@ mod filter_bar;
 pub use menu_bar::{MenuBar, MenuBarEvent};
 pub use status_bar::StatusBar;
 pub use query_panel::{QueryPanel, QueryPanelEvent};
+pub use saved_queries_dialog::{SavedQueriesDialog, SavedQueriesDialogEvent, SaveQueryDialog, SaveQueryDialogEvent};
 pub use settings_dialog::{SettingsDialog, SettingsDialogEvent};
 pub use connection_editor::{ConnectionEditor, ConnectionEditorEvent};
 pub use database_tree::{DatabaseTree, DatabaseTreeEvent};

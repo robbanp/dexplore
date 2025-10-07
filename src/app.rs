@@ -1,4 +1,4 @@
-use crate::config::{Config, DatabaseConnection};
+use crate::config::{Config, DatabaseConnection, SavedQueries};
 use crate::db::{AsyncOperation, Database, SchemaInfo};
 use crate::models::{AppState, Tab, TabSource, TableData};
 use crate::ui::components::*;
@@ -44,6 +44,11 @@ pub struct DbClientApp {
     pub edit_connection: Option<DatabaseConnection>,
     pub edit_connection_index: Option<usize>,
 
+    // Saved queries
+    pub saved_queries: SavedQueries,
+    pub show_saved_queries_dialog: bool,
+    pub show_save_query_dialog: bool,
+
     // UI Components
     menu_bar: MenuBar,
     status_bar: StatusBar,
@@ -55,6 +60,8 @@ pub struct DbClientApp {
     pagination: PaginationControls,
     data_grid: DataGrid,
     filter_bar: FilterBar,
+    saved_queries_dialog: SavedQueriesDialog,
+    save_query_dialog: SaveQueryDialog,
 }
 
 impl DbClientApp {
@@ -95,6 +102,16 @@ impl DbClientApp {
             (Vec::new(), 0, 0, HashSet::new())
         };
 
+        // Load saved queries
+        let saved_queries = SavedQueries::load().unwrap_or_else(|_| SavedQueries::new());
+
+        // Initialize query_input from active tab if available
+        let initial_query_input = if active_tab < tabs.len() {
+            tabs[active_tab].query_input.clone()
+        } else {
+            String::new()
+        };
+
         let mut app = Self {
             config,
             connection_string,
@@ -108,13 +125,16 @@ impl DbClientApp {
             tabs,
             active_tab,
             next_tab_id,
-            query_input: String::new(),
+            query_input: initial_query_input,
             show_query_panel: false,
             pending_operation: None,
             status_message: "Ready".to_string(),
             show_settings: false,
             edit_connection: None,
             edit_connection_index: None,
+            saved_queries,
+            show_saved_queries_dialog: false,
+            show_save_query_dialog: false,
             menu_bar: MenuBar::new(),
             status_bar: StatusBar::new(),
             query_panel: QueryPanel::new(),
@@ -125,6 +145,8 @@ impl DbClientApp {
             pagination: PaginationControls::new(),
             data_grid: DataGrid::new(),
             filter_bar: FilterBar::new(),
+            saved_queries_dialog: SavedQueriesDialog::new(),
+            save_query_dialog: SaveQueryDialog::new(),
         };
 
         // Auto-connect on startup
@@ -191,6 +213,12 @@ impl DbClientApp {
     }
 
     pub fn add_tab(&mut self, title: String, data: Option<TableData>, source: TabSource) {
+        // Initialize query_input from source if it's a Query
+        let query_input = match &source {
+            TabSource::Query { sql } => sql.clone(),
+            TabSource::Table { .. } => String::new(),
+        };
+
         let tab = Tab {
             id: self.next_tab_id,
             title,
@@ -204,6 +232,7 @@ impl DbClientApp {
             filters: Vec::new(),
             search_text: String::new(),
             search_match_index: 0,
+            query_input,
         };
         self.next_tab_id += 1;
         self.tabs.push(tab);
@@ -298,17 +327,129 @@ impl eframe::App for DbClientApp {
             self.status_bar.show(ui, &self.status_message, row_count);
         });
 
-        // Query panel (if shown)
+        // Query panel (if shown) - syncs with active tab's query
         if self.show_query_panel {
-            egui::TopBottomPanel::top("query_panel").show(ctx, |ui| {
-                if let Some(event) = self.query_panel.show(ui, &mut self.query_input) {
-                    match event {
-                        QueryPanelEvent::Execute => self.execute_query(None),
-                        QueryPanelEvent::Clear => self.query_input.clear(),
-                        QueryPanelEvent::Close => self.show_query_panel = false,
+            // Get or create query for active tab
+            if self.tabs.is_empty() {
+                // No tabs, use global query_input
+                egui::TopBottomPanel::top("query_panel").show(ctx, |ui| {
+                    if let Some(event) = self.query_panel.show(ui, &mut self.query_input) {
+                        match event {
+                            QueryPanelEvent::Execute => self.execute_query(None),
+                            QueryPanelEvent::Clear => self.query_input.clear(),
+                            QueryPanelEvent::Close => self.show_query_panel = false,
+                            QueryPanelEvent::SaveQuery => {
+                                if !self.query_input.trim().is_empty() {
+                                    self.show_save_query_dialog = true;
+                                } else {
+                                    self.status_message = "Cannot save empty query".to_string();
+                                }
+                            },
+                            QueryPanelEvent::LoadQuery => self.show_saved_queries_dialog = true,
+                        }
+                    }
+                });
+            } else {
+                // Use active tab's query
+                let active_tab_query = if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    &mut tab.query_input
+                } else {
+                    &mut self.query_input
+                };
+
+                let mut temp_query = active_tab_query.clone();
+                let mut execute = false;
+                let mut clear = false;
+                let mut close = false;
+                let mut save_query = false;
+                let mut load_query = false;
+
+                egui::TopBottomPanel::top("query_panel").show(ctx, |ui| {
+                    if let Some(event) = self.query_panel.show(ui, &mut temp_query) {
+                        match event {
+                            QueryPanelEvent::Execute => execute = true,
+                            QueryPanelEvent::Clear => clear = true,
+                            QueryPanelEvent::Close => close = true,
+                            QueryPanelEvent::SaveQuery => save_query = true,
+                            QueryPanelEvent::LoadQuery => load_query = true,
+                        }
+                    }
+                });
+
+                // Update the active tab's query
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    tab.query_input = temp_query.clone();
+                }
+                self.query_input = temp_query.clone();
+
+                // Handle events after updating
+                if execute {
+                    self.execute_query(Some(self.active_tab));
+                }
+                if clear {
+                    if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                        tab.query_input.clear();
+                    }
+                    self.query_input.clear();
+                }
+                if close {
+                    self.show_query_panel = false;
+                }
+                if save_query {
+                    if !temp_query.trim().is_empty() {
+                        self.show_save_query_dialog = true;
+                    } else {
+                        self.status_message = "Cannot save empty query".to_string();
                     }
                 }
-            });
+                if load_query {
+                    self.show_saved_queries_dialog = true;
+                }
+            }
+        }
+
+        // Save query dialog
+        if self.show_save_query_dialog {
+            if let Some(event) = self.save_query_dialog.show(ctx) {
+                match event {
+                    SaveQueryDialogEvent::Save(name) => {
+                        self.saved_queries.add_query(name, self.query_input.clone());
+                        let _ = self.saved_queries.save();
+                        self.status_message = "Query saved successfully".to_string();
+                        self.show_save_query_dialog = false;
+                    }
+                    SaveQueryDialogEvent::Cancel => {
+                        self.show_save_query_dialog = false;
+                    }
+                }
+            }
+        }
+
+        // Saved queries dialog
+        if self.show_saved_queries_dialog {
+            if let Some(event) = self.saved_queries_dialog.show(ctx, &self.saved_queries) {
+                match event {
+                    SavedQueriesDialogEvent::Load(index) => {
+                        if let Some(query) = self.saved_queries.get_query(index) {
+                            self.query_input = query.sql.clone();
+                            // Update active tab's query if there is one
+                            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                                tab.query_input = query.sql.clone();
+                            }
+                            self.status_message = format!("Loaded query: {}", query.name);
+                            self.show_saved_queries_dialog = false;
+                        }
+                    }
+                    SavedQueriesDialogEvent::Delete(index) => {
+                        self.saved_queries.delete_query(index);
+                        let _ = self.saved_queries.save();
+                        self.status_message = "Query deleted".to_string();
+                    }
+                    SavedQueriesDialogEvent::Close => {
+                        self.show_saved_queries_dialog = false;
+                    }
+                }
+            }
         }
 
         // Settings dialog
@@ -407,10 +548,54 @@ impl eframe::App for DbClientApp {
                 match event {
                     TabBarEvent::TabActivated(i) => {
                         self.active_tab = i;
+                        // Sync query_input with the newly active tab's query
+                        if let Some(tab) = self.tabs.get(i) {
+                            self.query_input = tab.query_input.clone();
+                        }
                         self.save_state();
                     }
                     TabBarEvent::TabClosed(i) => {
                         self.close_tab(i);
+                    }
+                }
+            }
+
+            // Display SQL query for query-based tabs
+            if let Some(tab) = self.tabs.get(self.active_tab) {
+                if let TabSource::Query { sql } = &tab.source {
+                    if !sql.is_empty() {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("📝 SQL Query:").strong());
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("📋 Copy").on_hover_text("Copy query to clipboard").clicked() {
+                                        ui.output_mut(|o| o.copied_text = sql.clone());
+                                        self.status_message = "Query copied to clipboard".to_string();
+                                    }
+                                    if ui.small_button("✏ Edit").on_hover_text("Edit in query panel").clicked() {
+                                        self.show_query_panel = true;
+                                    }
+                                });
+                            });
+                            ui.add_space(2.0);
+
+                            // Display the SQL in a code-like format
+                            let sql_preview = if sql.len() > 200 {
+                                format!("{}...", &sql[..200])
+                            } else {
+                                sql.clone()
+                            };
+
+                            egui::ScrollArea::horizontal()
+                                .max_width(ui.available_width())
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new(sql_preview)
+                                        .family(egui::FontFamily::Monospace)
+                                        .size(11.0)
+                                        .color(egui::Color32::from_rgb(80, 80, 120)));
+                                });
+                        });
+                        ui.add_space(5.0);
                     }
                 }
             }

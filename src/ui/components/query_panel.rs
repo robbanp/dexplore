@@ -5,6 +5,8 @@ pub enum QueryPanelEvent {
     Execute,
     Clear,
     Close,
+    SaveQuery,
+    LoadQuery,
 }
 
 pub struct QueryPanel;
@@ -33,6 +35,18 @@ impl QueryPanel {
                 if ui.button("Clear").clicked() {
                     event = Some(QueryPanelEvent::Clear);
                 }
+
+                ui.separator();
+
+                if ui.button("💾 Save").on_hover_text("Save current query").clicked() {
+                    event = Some(QueryPanelEvent::SaveQuery);
+                }
+                if ui.button("📂 Load").on_hover_text("Load saved query").clicked() {
+                    event = Some(QueryPanelEvent::LoadQuery);
+                }
+
+                ui.separator();
+
                 if ui.button("Close").clicked() {
                     event = Some(QueryPanelEvent::Close);
                 }
