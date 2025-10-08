@@ -103,9 +103,115 @@ impl Database {
             schemas_map.entry(schema).or_default().push(table);
         }
 
+        // Get all columns for all tables in a single query
+        let columns_rows = self
+            .client
+            .query(
+                "SELECT
+                    c.table_schema,
+                    c.table_name,
+                    c.column_name,
+                    CASE
+                        WHEN c.character_maximum_length IS NOT NULL THEN c.data_type || '(' || c.character_maximum_length || ')'
+                        WHEN c.numeric_precision IS NOT NULL AND c.numeric_scale IS NOT NULL THEN c.data_type || '(' || c.numeric_precision || ',' || c.numeric_scale || ')'
+                        WHEN c.datetime_precision IS NOT NULL AND c.datetime_precision != 6 THEN c.udt_name || '(' || c.datetime_precision || ')'
+                        WHEN c.datetime_precision IS NOT NULL AND c.datetime_precision = 6 THEN c.udt_name || '(6)'
+                        ELSE c.udt_name
+                    END as full_data_type
+                 FROM information_schema.columns c
+                 WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                 ORDER BY c.table_schema, c.table_name, c.ordinal_position",
+                &[],
+            )
+            .await?;
+
+        // Get all primary keys in one query
+        let pk_rows = self
+            .client
+            .query(
+                "SELECT kcu.table_schema, kcu.table_name, kcu.column_name
+                 FROM information_schema.table_constraints tc
+                 JOIN information_schema.key_column_usage kcu
+                     ON tc.constraint_name = kcu.constraint_name
+                     AND tc.table_schema = kcu.table_schema
+                 WHERE tc.constraint_type = 'PRIMARY KEY'
+                     AND tc.table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')",
+                &[],
+            )
+            .await?;
+
+        let mut pk_map: std::collections::HashMap<(String, String), std::collections::HashSet<String>> = std::collections::HashMap::new();
+        for row in pk_rows {
+            let schema: String = row.get(0);
+            let table: String = row.get(1);
+            let column: String = row.get(2);
+            pk_map.entry((schema, table)).or_default().insert(column);
+        }
+
+        // Get all foreign keys in one query
+        let fk_rows = self
+            .client
+            .query(
+                "SELECT kcu.table_schema, kcu.table_name, kcu.column_name
+                 FROM information_schema.table_constraints tc
+                 JOIN information_schema.key_column_usage kcu
+                     ON tc.constraint_name = kcu.constraint_name
+                     AND tc.table_schema = kcu.table_schema
+                 WHERE tc.constraint_type = 'FOREIGN KEY'
+                     AND tc.table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')",
+                &[],
+            )
+            .await?;
+
+        let mut fk_map: std::collections::HashMap<(String, String), std::collections::HashSet<String>> = std::collections::HashMap::new();
+        for row in fk_rows {
+            let schema: String = row.get(0);
+            let table: String = row.get(1);
+            let column: String = row.get(2);
+            fk_map.entry((schema, table)).or_default().insert(column);
+        }
+
+        // Build table_columns map
+        let mut table_columns_map: std::collections::HashMap<String, std::collections::HashMap<String, Vec<ColumnInfo>>> =
+            std::collections::HashMap::new();
+
+        for row in columns_rows {
+            let schema: String = row.get(0);
+            let table: String = row.get(1);
+            let column_name: String = row.get(2);
+            let data_type: String = row.get(3);
+
+            let pk_set = pk_map.get(&(schema.clone(), table.clone()));
+            let fk_set = fk_map.get(&(schema.clone(), table.clone()));
+
+            let column_info = ColumnInfo {
+                name: column_name.clone(),
+                data_type,
+                is_primary_key: pk_set.map(|s| s.contains(&column_name)).unwrap_or(false),
+                is_foreign_key: fk_set.map(|s| s.contains(&column_name)).unwrap_or(false),
+            };
+
+            table_columns_map
+                .entry(schema)
+                .or_default()
+                .entry(table)
+                .or_default()
+                .push(column_info);
+        }
+
         let mut result: Vec<SchemaInfo> = schemas_map
             .into_iter()
-            .map(|(name, tables)| SchemaInfo { name, tables })
+            .map(|(name, tables)| {
+                let table_columns = table_columns_map
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default();
+                SchemaInfo {
+                    name,
+                    tables,
+                    table_columns,
+                }
+            })
             .collect();
 
         result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -115,6 +221,7 @@ impl Database {
             result.push(SchemaInfo {
                 name: "public".to_string(),
                 tables: vec![],
+                table_columns: std::collections::HashMap::new(),
             });
         }
 

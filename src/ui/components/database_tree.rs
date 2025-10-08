@@ -6,6 +6,7 @@ use std::collections::HashSet;
 pub enum DatabaseTreeEvent {
     TableClicked(String, String),
     TableRightClicked(String, String),
+    TableToggled(String, String),
     SchemaToggled(String),
     SearchChanged(String),
 }
@@ -22,6 +23,7 @@ impl DatabaseTree {
         ui: &mut egui::Ui,
         schemas: &[SchemaInfo],
         expanded_schemas: &HashSet<String>,
+        expanded_tables: &HashSet<(String, String)>,
         selected_table: &Option<(String, String)>,
         search_query: &mut String,
     ) -> Option<DatabaseTreeEvent> {
@@ -123,26 +125,82 @@ impl DatabaseTree {
                         ui.indent(&schema.name, |ui| {
                             for table in filtered_tables {
                                 let is_selected = selected_table.as_ref() == Some(&(schema.name.clone(), table.clone()));
+                                let table_key = (schema.name.clone(), table.clone());
+                                let is_table_expanded = expanded_tables.contains(&table_key);
 
-                                // Highlight table name if it matches search
-                                let table_text = if !search_query.is_empty() && table.to_lowercase().contains(&search_lower) {
-                                    egui::RichText::new(format!("📊 {}", table)).color(egui::Color32::from_rgb(100, 200, 255))
-                                } else {
-                                    egui::RichText::new(format!("📊 {}", table))
-                                };
-
-                                let response = ui.selectable_label(is_selected, table_text);
-
-                                if response.clicked() {
-                                    event = Some(DatabaseTreeEvent::TableClicked(schema.name.clone(), table.clone()));
-                                }
-
-                                response.context_menu(|ui| {
-                                    if ui.button("View Data").clicked() {
-                                        event = Some(DatabaseTreeEvent::TableRightClicked(schema.name.clone(), table.clone()));
-                                        ui.close_menu();
+                                // Table row with expand/collapse arrow
+                                ui.horizontal(|ui| {
+                                    // Expand/collapse arrow
+                                    let arrow = if is_table_expanded { "▼" } else { "▶" };
+                                    if ui.small_button(arrow).clicked() {
+                                        event = Some(DatabaseTreeEvent::TableToggled(schema.name.clone(), table.clone()));
                                     }
+
+                                    // Highlight table name if it matches search
+                                    let table_text = if !search_query.is_empty() && table.to_lowercase().contains(&search_lower) {
+                                        egui::RichText::new(format!("📊 {}", table)).color(egui::Color32::from_rgb(100, 200, 255))
+                                    } else {
+                                        egui::RichText::new(format!("📊 {}", table))
+                                    };
+
+                                    let response = ui.selectable_label(is_selected, table_text);
+
+                                    if response.clicked() {
+                                        event = Some(DatabaseTreeEvent::TableClicked(schema.name.clone(), table.clone()));
+                                    }
+
+                                    response.context_menu(|ui| {
+                                        if ui.button("View Data").clicked() {
+                                            event = Some(DatabaseTreeEvent::TableRightClicked(schema.name.clone(), table.clone()));
+                                            ui.close_menu();
+                                        }
+                                    });
                                 });
+
+                                // Show columns if table is expanded
+                                if is_table_expanded {
+                                    if let Some(columns) = schema.table_columns.get(table) {
+                                        ui.indent(table, |ui| {
+                                            // Add a white background frame for the columns area
+                                            let frame = egui::Frame::none()
+                                                .fill(egui::Color32::from_rgb(250, 250, 252))
+                                                .inner_margin(egui::Margin::symmetric(4.0, 2.0));
+
+                                            frame.show(ui, |ui| {
+                                                for column in columns {
+                                                    ui.horizontal(|ui| {
+                                                        ui.add_space(6.0);
+
+                                                        // Column name
+                                                        let mut column_text = egui::RichText::new(&column.name)
+                                                            .size(11.0);
+
+                                                        // Color coding for special columns
+                                                        let data_type_color = if column.is_primary_key {
+                                                            column_text = column_text.color(egui::Color32::from_rgb(200, 140, 0)); // Dark gold for PK
+                                                            egui::Color32::from_rgb(150, 100, 0) // Darker gold for type
+                                                        } else if column.is_foreign_key {
+                                                            column_text = column_text.color(egui::Color32::from_rgb(40, 100, 200)); // Dark blue for FK
+                                                            egui::Color32::from_rgb(30, 80, 160) // Darker blue for type
+                                                        } else {
+                                                            column_text = column_text.color(egui::Color32::from_rgb(50, 50, 60)); // Dark gray
+                                                            egui::Color32::from_rgb(90, 90, 100) // Medium gray for type
+                                                        };
+
+                                                        ui.label(column_text);
+
+                                                        // Data type on the right
+                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                            ui.label(egui::RichText::new(&column.data_type)
+                                                                .size(10.0)
+                                                                .color(data_type_color));
+                                                        });
+                                                    });
+                                                }
+                                            });
+                                        });
+                                    }
+                                }
                             }
                         });
                     }

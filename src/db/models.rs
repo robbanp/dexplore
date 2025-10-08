@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct SchemaInfo {
     pub name: String,
     pub tables: Vec<String>,
+    pub table_columns: HashMap<String, Vec<ColumnInfo>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -187,7 +187,35 @@ impl SqlEditor {
 
         // Show autocomplete popup
         if self.show_suggestions && !self.suggestions.is_empty() {
-            let popup_pos = text_response.rect.left_bottom() + egui::vec2(0.0, 2.0);
+            // Calculate popup position based on cursor location
+            let popup_pos = if let Some(state) = egui::TextEdit::load_state(ui.ctx(), text_response.id) {
+                if let Some(cursor_range) = state.cursor.char_range() {
+                    // Get the galley (text layout) to find cursor position
+                    let cursor_pos = cursor_range.primary;
+
+                    // Get galley to calculate cursor position
+                    let galley = ui.fonts(|f| {
+                        let mut layout_job = Self::highlight_sql(ui, sql);
+                        layout_job.wrap.max_width = text_response.rect.width();
+                        f.layout_job(layout_job)
+                    });
+
+                    // Convert CCursor to Cursor using galley
+                    let cursor = galley.from_ccursor(cursor_pos);
+
+                    // Find the cursor position in the galley
+                    let cursor_rect = galley.pos_from_cursor(&cursor);
+
+                    // Position popup below the cursor
+                    text_response.rect.left_top() + egui::vec2(cursor_rect.min.x, cursor_rect.max.y + 2.0)
+                } else {
+                    // Fallback to bottom of text editor
+                    text_response.rect.left_bottom() + egui::vec2(0.0, 2.0)
+                }
+            } else {
+                // Fallback to bottom of text editor
+                text_response.rect.left_bottom() + egui::vec2(0.0, 2.0)
+            };
 
             egui::Area::new(egui::Id::new("sql_autocomplete"))
                 .fixed_pos(popup_pos)
@@ -817,27 +845,51 @@ impl SqlEditor {
             return (String::new(), 0);
         }
 
-        let bytes = text.as_bytes();
-        let mut start = self.cursor_pos;
+        // Ensure cursor_pos is at a valid UTF-8 boundary
+        let safe_cursor_pos = if text.is_char_boundary(self.cursor_pos) {
+            self.cursor_pos
+        } else {
+            // Find the nearest valid boundary before cursor_pos
+            (0..self.cursor_pos).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0)
+        };
 
-        // Find start of word
-        while start > 0 {
-            let c = bytes[start - 1] as char;
+        // Get text up to cursor
+        let text_before_cursor = &text[..safe_cursor_pos];
+
+        // Find the start of the word by going backwards through characters
+        let mut start = safe_cursor_pos;
+        for (i, c) in text_before_cursor.char_indices().rev() {
             if !c.is_alphanumeric() && c != '_' && c != '.' {
+                // Found a non-word character, word starts after it
+                start = i + c.len_utf8();
                 break;
             }
-            start -= 1;
+            // We're at the beginning
+            start = i;
         }
 
-        let word = text[start..self.cursor_pos].to_string();
+        let word = text[start..safe_cursor_pos].to_string();
         (word, start)
     }
 
     fn insert_suggestion(&mut self, text: &mut String, suggestion: &str) -> usize {
+        // Ensure word_start and cursor_pos are at valid UTF-8 boundaries
+        let safe_start = if text.is_char_boundary(self.word_start) {
+            self.word_start
+        } else {
+            (0..self.word_start).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0)
+        };
+
+        let safe_end = if text.is_char_boundary(self.cursor_pos) {
+            self.cursor_pos
+        } else {
+            (0..self.cursor_pos).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0)
+        };
+
         // Replace the partial word with the suggestion and add a space
         let replacement = format!("{} ", suggestion);
-        text.replace_range(self.word_start..self.cursor_pos, &replacement);
-        let new_pos = self.word_start + replacement.len();
+        text.replace_range(safe_start..safe_end, &replacement);
+        let new_pos = safe_start + replacement.len();
         self.cursor_pos = new_pos;
         new_pos
     }

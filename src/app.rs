@@ -21,6 +21,7 @@ pub struct DbClientApp {
     // UI state
     pub schemas: Vec<SchemaInfo>,
     pub expanded_schemas: HashSet<String>,
+    pub expanded_tables: HashSet<(String, String)>, // (schema, table)
     pub selected_table: Option<(String, String)>, // (schema, table)
     pub search_query: String,
 
@@ -120,6 +121,7 @@ impl DbClientApp {
             runtime,
             schemas: Vec::new(),
             expanded_schemas,
+            expanded_tables: HashSet::new(),
             selected_table: None,
             search_query: String::new(),
             tabs,
@@ -531,7 +533,7 @@ impl eframe::App for DbClientApp {
                 ui.heading("Database Structure");
                 ui.separator();
 
-                if let Some(event) = self.database_tree.show(ui, &self.schemas, &self.expanded_schemas, &self.selected_table, &mut self.search_query) {
+                if let Some(event) = self.database_tree.show(ui, &self.schemas, &self.expanded_schemas, &self.expanded_tables, &self.selected_table, &mut self.search_query) {
                     match event {
                         DatabaseTreeEvent::TableClicked(schema, table) => {
                             self.selected_table = Some((schema.clone(), table.clone()));
@@ -540,6 +542,14 @@ impl eframe::App for DbClientApp {
                         DatabaseTreeEvent::TableRightClicked(schema, table) => {
                             self.selected_table = Some((schema.clone(), table.clone()));
                             self.load_table_data(schema, table, None);
+                        }
+                        DatabaseTreeEvent::TableToggled(schema, table) => {
+                            let table_key = (schema, table);
+                            if self.expanded_tables.contains(&table_key) {
+                                self.expanded_tables.remove(&table_key);
+                            } else {
+                                self.expanded_tables.insert(table_key);
+                            }
                         }
                         DatabaseTreeEvent::SchemaToggled(schema_name) => {
                             if self.expanded_schemas.contains(&schema_name) {
